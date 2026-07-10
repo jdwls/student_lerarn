@@ -1,0 +1,141 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import '../utils/app_path.dart';
+
+typedef SocketMessageCallback = void Function(Map<String, dynamic> message);
+
+class SocketService {
+  static SocketService? _instance;
+  static SocketService get instance => _instance ??= SocketService._();
+
+  Socket? _socket;
+  Timer? _heartbeatTimer;
+  String? _studentId;
+  bool _isConnected = false;
+  String _currentStatus = 'online';
+  final _connectionController = StreamController<bool>.broadcast();
+  bool _intentionalDisconnect = false;
+
+  static String _serverIp = 'localhost';
+  static const int _socketPort = 20021;
+
+  int _reconnectAttempts = 0;
+  static const int _maxReconnectDelay = 60;
+  static const int _baseReconnectDelay = 1;
+  static const int _maxReconnectAttempts = 10;
+
+  int _heartbeatInterval = 5;
+  final List<SocketMessageCallback> _messageCallbacks = [];
+
+  SocketService._();
+
+  Stream<bool> get connectionStream => _connectionController.stream;
+  bool get isConnected => _isConnected;
+
+  void addMessageCallback(SocketMessageCallback cb) => _messageCallbacks.add(cb);
+  void removeMessageCallback(SocketMessageCallback cb) => _messageCallbacks.remove(cb);
+
+  int _getReconnectDelay() {
+    final d = _baseReconnectDelay * (1 << _reconnectAttempts);
+    return d > _maxReconnectDelay ? _maxReconnectDelay : d;
+  }
+
+  static Future<void> init() async {
+    try {
+      final f = File(AppPath.configFilePath);
+      if (await f.exists()) {
+        final data = json.decode(await f.readAsString()) as Map<String, dynamic>;
+        _serverIp = data['server_ip'] ?? 'localhost';
+      }
+    } catch (_) {}
+  }
+
+  Future<void> connect(String studentId) async {
+    _intentionalDisconnect = false;
+    if (_isConnected) return;
+    _studentId = studentId;
+    try {
+      _socket = await Socket.connect(_serverIp, _socketPort)
+          .timeout(const Duration(seconds: 10));
+      _isConnected = true;
+      _connectionController.add(true);
+      _reconnectAttempts = 0;
+      _socket!.listen(
+        (d) => _handleMessage(utf8.decode(d)),
+        onError: (_) { _isConnected = false; _connectionController.add(false); if (!_intentionalDisconnect) _reconnect(); },
+        onDone: () { _isConnected = false; _connectionController.add(false); if (!_intentionalDisconnect) _reconnect(); },
+      );
+      _startHeartbeat();
+    } catch (e) {
+      _isConnected = false;
+      _connectionController.add(false);
+      if (!_intentionalDisconnect) _reconnect();
+    }
+  }
+
+  void _handleMessage(String msg) {
+    try {
+      final data = json.decode(msg) as Map<String, dynamic>;
+      switch (data['type'] as String? ?? '') {
+        case 'kickout':
+          _intentionalDisconnect = true;
+          disconnect();
+          break;
+        case 'status_query':
+          _sendHeartbeat();
+          break;
+        default:
+          break;
+      }
+      for (final cb in _messageCallbacks) { try { cb(data); } catch (_) {} }
+    } catch (_) {}
+  }
+
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(Duration(seconds: _heartbeatInterval), (_) => _sendHeartbeat());
+  }
+
+  void _sendHeartbeat() {
+    if (_socket != null && _isConnected && _studentId != null) {
+      try { _socket!.write('${json.encode({"type":"heartbeat","student_id":_studentId,"status":_currentStatus})}\n'); } catch (_) {}
+    }
+  }
+
+  void updateStatus(String status) {
+    _currentStatus = status;
+    if (_socket != null && _isConnected && _studentId != null) {
+      try { _socket!.write('${json.encode({"type":"status_update","student_id":_studentId,"status":status})}\n'); } catch (_) {}
+    }
+  }
+
+  void _reconnect() {
+    if (_intentionalDisconnect || _reconnectAttempts >= _maxReconnectAttempts) return;
+    final d = _getReconnectDelay();
+    _reconnectAttempts++;
+    Future.delayed(Duration(seconds: d), () {
+      if (!_isConnected && _studentId != null && !_intentionalDisconnect) connect(_studentId!);
+    });
+  }
+
+  void disconnect() {
+    _intentionalDisconnect = true;
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+    _socket?.close();
+    _socket = null;
+    _isConnected = false;
+    _connectionController.add(false);
+  }
+
+  void dispose() {
+    _intentionalDisconnect = true;
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+    _socket?.close();
+    _socket = null;
+    _isConnected = false;
+    if (!_connectionController.isClosed) _connectionController.close();
+  }
+}
