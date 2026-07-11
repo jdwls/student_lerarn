@@ -34,118 +34,6 @@ mixin _OperationHandlerMixin on State<QuizPage> {
         ),
         const SizedBox(height: 24),
 
-        // Hint text
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.cyan.withAlpha(26),
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.computer, size: 16, color: Colors.cyan[700]),
-              const SizedBox(width: 6),
-              Text(
-                '点击下方按钮开始操作',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.cyan[700],
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 24),
-
-        // Initial files info
-        if (initialFiles.isNotEmpty) ...[
-          Text(
-            '初始文件：',
-            style: const TextStyle(
-                fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black),
-          ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: initialFiles.map<Widget>((file) {
-              return Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.blue.withAlpha(26),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.blue.withAlpha(77)),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.insert_drive_file,
-                        size: 16, color: Colors.blue[700]),
-                    const SizedBox(width: 4),
-                    Text(
-                      file['fileName'] ?? '',
-                      style: TextStyle(
-                          fontSize: 13,
-                          color: Colors.blue[700],
-                          fontWeight: FontWeight.w500),
-                    ),
-                  ],
-                ),
-              );
-            }).toList(),
-          ),
-          const SizedBox(height: 24),
-        ],
-
-        // Answer checks info
-        if (answers.isNotEmpty) ...[
-          Text(
-            '答案检查点：',
-            style: const TextStyle(
-                fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black),
-          ),
-          const SizedBox(height: 8),
-          Column(
-            children: answers.map<Widget>((ans) {
-              return Container(
-                margin: const EdgeInsets.only(bottom: 8),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.green.withAlpha(26),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.green.withAlpha(77)),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.check_circle_outline,
-                        size: 16, color: Colors.green[700]),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        '文件：${ans['targetPath'] ?? ''}',
-                        style: TextStyle(
-                            fontSize: 13,
-                            color: Colors.green[700],
-                            fontWeight: FontWeight.w500),
-                      ),
-                    ),
-                    Text(
-                      '${ans['score'] ?? 5} 分',
-                      style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.green[700],
-                          fontWeight: FontWeight.bold),
-                    ),
-                  ],
-                ),
-              );
-            }).toList(),
-          ),
-          const SizedBox(height: 24),
-        ],
-
         // Completion status
         if (isCompleted) ...[
           Container(
@@ -222,30 +110,7 @@ mixin _OperationHandlerMixin on State<QuizPage> {
       }
     }
 
-    // Step 2: Write initial files to virtual drive BEFORE opening Explorer
-    if (driveLetter != null && initialFiles.isNotEmpty) {
-      try {
-        // Convert initial files to the format expected by VhdService.writeInitialFiles
-        // Provide bankPath so writeInitialFiles can find source files in the correct subfolder
-        final bankPath = '${AppPath.informationDir}${Platform.pathSeparator}${_quizState._selectedBank}${Platform.pathSeparator}操作题';
-        final writeFiles = initialFiles.map<Map<String, dynamic>>((f) {
-          final filePath = f['filePath'] ?? '';
-          return {
-            'fileName': f['fileName'] ?? '',
-            'content': f['content'] ?? '',
-            'filePath': filePath,
-            'bankPath': bankPath,
-          };
-        }).toList();
-        await VhdService.writeInitialFiles(writeFiles);
-        debugPrint(
-            'Initial files written to virtual drive $driveLetter: ${writeFiles.length} files');
-      } catch (e) {
-        debugPrint('Write initial files to virtual drive failed: $e');
-      }
-    }
-
-    // Step 3: Exit fullscreen and resize to small window FIRST
+    // Step 2: Exit fullscreen and resize to small window FIRST
     try {
       await _quizState._exitFullScreen();
       // Temporarily remove minimum size constraint
@@ -268,7 +133,7 @@ mixin _OperationHandlerMixin on State<QuizPage> {
       debugPrint('Resize window failed: $e');
     }
 
-    // Step 4: Open Explorer AFTER window operations, with a small delay for stability
+    // Step 3: Open Explorer AFTER window operations, with a small delay for stability
     if (driveLetter != null) {
       try {
         // Small delay to ensure subst mapping is stable after window operations
@@ -447,139 +312,24 @@ mixin _OperationHandlerMixin on State<QuizPage> {
             ),
           ),
           const SizedBox(height: 16),
-
-          // Drive info
-          Container(
+          // Refetch button - re-obtain current question files from Documents
+          SizedBox(
             width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.blue.withAlpha(26),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.blue.withAlpha(77)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.folder_open, size: 16, color: Colors.blue[700]),
-                    const SizedBox(width: 8),
-                    Text(
-                      '虚拟驱动器：${VhdService.mountDrive ?? "未挂载"}',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.blue[700],
-                      ),
-                    ),
-                  ],
+            child: OutlinedButton.icon(
+              onPressed: () => _refetchCurrentFileFromDocument(),
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('重新获取'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.blue,
+                side: const BorderSide(color: Colors.blue),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
                 ),
-                const SizedBox(height: 8),
-                ElevatedButton.icon(
-                  onPressed: () async {
-                    final driveLetter = VhdService.mountDrive;
-                    if (driveLetter != null) {
-                      try {
-                        await Process.run('explorer', [driveLetter]);
-                      } catch (e) {
-                        debugPrint('Open explorer failed: $e');
-                      }
-                    }
-                  },
-                  icon: const Icon(Icons.open_in_new, size: 16),
-                  label: const Text('在资源管理器中打开'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue[600],
-                    foregroundColor: Colors.white,
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
-          const SizedBox(height: 16),
-
-          // Initial files
-          if (initialFiles.isNotEmpty) ...[
-            Text(
-              '初始文件：',
-              style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.grey[800]),
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: initialFiles.map<Widget>((f) {
-                return Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.withAlpha(26),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: Colors.blue.withAlpha(77)),
-                  ),
-                  child: Text(
-                    f['fileName'] ?? '',
-                    style: TextStyle(fontSize: 12, color: Colors.blue[700]),
-                  ),
-                );
-              }).toList(),
-            ),
-            const SizedBox(height: 16),
-          ],
-
-          // Answer checks
-          if (answers.isNotEmpty) ...[
-            Text(
-              '答案检查点：',
-              style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.grey[800]),
-            ),
-            const SizedBox(height: 8),
-            ...answers.map((a) {
-              return Container(
-                margin: const EdgeInsets.only(bottom: 6),
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.green.withAlpha(26),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: Colors.green.withAlpha(77)),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.check_circle_outline,
-                        size: 14, color: Colors.green[700]),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        '${a['targetPath'] ?? ''}',
-                        style:
-                            TextStyle(fontSize: 12, color: Colors.green[700]),
-                      ),
-                    ),
-                    Text(
-                      '${a['score'] ?? 5} 分',
-                      style: TextStyle(
-                          fontSize: 11,
-                          color: Colors.green[700],
-                          fontWeight: FontWeight.bold),
-                    ),
-                  ],
-                ),
-              );
-            }),
-            const SizedBox(height: 16),
-          ],
-
+          const SizedBox(height: 12),
           // Complete button
           SizedBox(
             width: double.infinity,
@@ -600,6 +350,102 @@ mixin _OperationHandlerMixin on State<QuizPage> {
         ],
       ),
     );
+  }
+
+  /// 从 Documents/题库/{题库名称}/操作题/ 重新获取当前题目的操作题文件
+  /// 复制到虚拟驱动器，覆盖原有文件
+  Future<void> _refetchCurrentFileFromDocument() async {
+    try {
+      // 1. 获取题库名称
+      final bankName = _quizState._selectedBank;
+      if (bankName == null) {
+        _showDialog('获取失败，请联系老师');
+        return;
+      }
+
+      // 2. 获取用户文档目录路径
+      final userProfile = Platform.environment['USERPROFILE'] ?? '';
+      if (userProfile.isEmpty) {
+        _showDialog('获取失败，请联系老师');
+        return;
+      }
+      final documentOperationPath = '$userProfile\\Documents\\题库\\$bankName\\操作题';
+      final docDir = Directory(documentOperationPath);
+      if (!await docDir.exists()) {
+        debugPrint('Document operation path not found: $documentOperationPath');
+        _showDialog('获取失败，请联系老师');
+        return;
+      }
+
+      // 3. 获取当前题目的初始文件列表
+      final initialFiles = _quizState._currentOperationInitialFiles;
+      if (initialFiles == null || initialFiles.isEmpty) {
+        _showDialog('获取失败，请联系老师');
+        return;
+      }
+
+      // 4. 获取虚拟驱动器盘符
+      final driveLetter = VhdService.mountDrive;
+      if (driveLetter == null) {
+        _showDialog('获取失败，请联系老师');
+        return;
+      }
+
+      int copiedCount = 0;
+
+      // 5. 遍历所有初始文件，从 Documents 复制到虚拟驱动器
+      for (final file in initialFiles) {
+        final fileName = file['fileName'] ?? '';
+        final filePath = file['filePath'] ?? '';
+
+        if (fileName.isEmpty && filePath.isEmpty) continue;
+
+        // 规范化 filePath：去除 "题库/{bankName}/操作题/" 前缀
+        // 使用 _DataLoaderMixin 中的静态方法 _normalizeOperationFilePath
+        final normalizedPath = _DataLoaderMixin._normalizeOperationFilePath(filePath);
+        final relativePath = normalizedPath.isNotEmpty ? normalizedPath : fileName;
+
+        final sourceFile = File('$documentOperationPath\\$relativePath');
+        if (!await sourceFile.exists()) {
+          debugPrint('Source file not found: ${sourceFile.path}');
+          continue;
+        }
+
+        // 目标路径：虚拟驱动器
+        final targetFile = File('$driveLetter\\$relativePath');
+        await targetFile.parent.create(recursive: true);
+        await sourceFile.copy(targetFile.path);
+        copiedCount++;
+        debugPrint('Copied: ${sourceFile.path} -> ${targetFile.path}');
+      }
+
+      if (copiedCount > 0) {
+        _showDialog('重新获取题目成功');
+      } else {
+        _showDialog('获取失败，请联系老师');
+      }
+    } catch (e) {
+      debugPrint('Refetch file from document failed: $e');
+      _showDialog('获取失败，请联系老师');
+    }
+  }
+
+  /// 使用 showDialog 弹窗提示（小窗无 Scaffold，不能用 SnackBar）
+  void _showDialog(String message) {
+    if (_quizState.mounted) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          content: Text(message),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('确定'),
+            ),
+          ],
+        ),
+      );
+    }
   }
 
   /// Refresh current operation question (only refreshes current question files, not all files)

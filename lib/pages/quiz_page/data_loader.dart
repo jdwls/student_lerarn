@@ -131,6 +131,9 @@ mixin _DataLoaderMixin on State<QuizPage> {
         });
         _startExamTimer();
       }
+
+      // 3秒后复制操作题到 Documents/题库/{题库名称}/操作题/
+      _copyOperationToDocumentsAfterDelay(bankName);
     } catch (e) {
       _quizState.setState(() {
         _quizState._isLoading = false;
@@ -380,11 +383,17 @@ mixin _DataLoaderMixin on State<QuizPage> {
       }
     }
 
+    // 从检查项分值累加计算操作题总分（如果未显式设置分值）
+    final operationScore = q['分值'] ?? q['score'];
+    final calculatedScore = operationScore != null
+        ? (int.tryParse(operationScore.toString()) ?? 10)
+        : answers.fold<int>(0, (sum, a) => sum + (a['score'] as int));
+
     return {
       'type': 'operation',
       'number': q['题号']?.toString() ?? q['number'] ?? '1',
       'questionText': q['题干'] ?? q['questionText'] ?? '',
-      'score': q['分值'] ?? q['score'] ?? 10,
+      'score': calculatedScore,
       'initialFiles': initialFileRaw,
       'answers': answers,
     };
@@ -646,6 +655,51 @@ mixin _DataLoaderMixin on State<QuizPage> {
       }
     } catch (e) {
       debugPrint('Create operation drive mapping exception: $e');
+    }
+  }
+
+  /// 延迟3秒后，将操作题从 information 复制到 Documents/题库/{bankName}/操作题/
+  Future<void> _copyOperationToDocumentsAfterDelay(String bankName) async {
+    try {
+      await Future.delayed(const Duration(seconds: 3));
+      await _copyOperationToDocuments(bankName);
+    } catch (e) {
+      debugPrint('Copy operation to documents after delay failed: $e');
+    }
+  }
+
+  /// 将操作题从 information/{bankName}/操作题/ 复制到 Documents/题库/{bankName}/操作题/
+  Future<void> _copyOperationToDocuments(String bankName) async {
+    try {
+      // 源路径：information/{bankName}/操作题/
+      final sourcePath = '${AppPath.informationDir}${Platform.pathSeparator}$bankName${Platform.pathSeparator}操作题';
+      final sourceDir = Directory(sourcePath);
+      if (!await sourceDir.exists()) {
+        debugPrint('Source operation path not found: $sourcePath');
+        return;
+      }
+
+      // 目标路径：Documents/题库/{bankName}/操作题/
+      final userProfile = Platform.environment['USERPROFILE'] ?? '';
+      if (userProfile.isEmpty) {
+        debugPrint('Cannot get user profile path');
+        return;
+      }
+      final targetPath = '$userProfile\\Documents\\题库\\$bankName\\操作题';
+      final targetDir = Directory(targetPath);
+      if (!await targetDir.exists()) {
+        await targetDir.create(recursive: true);
+      } else {
+        // 先删除旧目录，再重新创建，确保完全覆盖
+        await targetDir.delete(recursive: true);
+        await targetDir.create(recursive: true);
+      }
+
+      // 递归复制所有文件
+      await _copyDirectory(sourceDir, targetDir);
+      debugPrint('Operation files copied to Documents: $sourcePath -> $targetPath');
+    } catch (e) {
+      debugPrint('Copy operation to documents failed: $e');
     }
   }
 }
