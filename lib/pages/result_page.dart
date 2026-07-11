@@ -75,17 +75,6 @@ class _ResultPageState extends State<ResultPage> {
     return '${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
   }
 
-  /// 获取主题色（基于得分率）
-  Color _getThemeColor() {
-    final percentage = widget.totalScore > 0
-        ? (widget.score / widget.totalScore * 100).round()
-        : 0;
-    if (percentage >= 90) return const Color(0xFF22C55E);
-    if (percentage >= 80) return const Color(0xFF3B82F6);
-    if (percentage >= 60) return const Color(0xFFF59E0B);
-    return const Color(0xFFEF4444);
-  }
-
   /// 返回主界面
   void _returnToHome() {
     Navigator.of(context).popUntil((route) => route.isFirst);
