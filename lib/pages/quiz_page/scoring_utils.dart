@@ -118,6 +118,50 @@ mixin _ScoringUtilsMixin on State<QuizPage> {
     }
   }
 
+  /// 批改所有未批改的操作题（提交前调用）
+  Future<void> _gradeAllOperationQuestions() async {
+    if (!VhdService.isMounted) {
+      debugPrint('[批改] 批量批改跳过: 驱动器未挂载');
+      return;
+    }
+
+    for (int i = 0; i < _quizState._currentQuestions.length; i++) {
+      final question = _quizState._currentQuestions[i];
+      if (question['type'] != 'operation') continue;
+
+      // 跳过已批改的（有得分的操作题已经批改过）
+      final existingAnswer = _quizState._answers[i];
+      if (existingAnswer is Map && existingAnswer.containsKey('score')) continue;
+
+      // 获取该题目的检查点
+      final answers = question['answers'] as List<dynamic>? ?? [];
+      if (answers.isEmpty) {
+        debugPrint('[批改] 操作题 $i 没有检查点，跳过');
+        continue;
+      }
+
+      try {
+        final checkResult = await VhdService.checkAnswersWithDetails(
+          answers.cast<Map<String, dynamic>>(),
+        );
+        final operationScore = checkResult['totalScore'] as int? ?? 0;
+
+        _quizState._answers[i] = {
+          'score': operationScore,
+          'completed': true,
+        };
+        debugPrint('[批改] 提交前批量批改操作题 $i: score=$operationScore');
+      } catch (e) {
+        debugPrint('[批改] 操作题 $i 批改异常: $e');
+        // 批改异常时记为0分
+        _quizState._answers[i] = {
+          'score': 0,
+          'completed': true,
+        };
+      }
+    }
+  }
+
   /// Submit exam
   Future<void> _submitExam() async {
     if (!_quizState._canSubmitExam || _quizState._isSubmitting) return;
@@ -161,6 +205,8 @@ mixin _ScoringUtilsMixin on State<QuizPage> {
     _quizState.setState(() => _quizState._isSubmitting = true);
 
     try {
+      // 提交前批改所有未批改的操作题
+      await _gradeAllOperationQuestions();
       final result = _calculateScore();
       final answers = _convertAnswersForJson();
       final questionsDetail = _buildQuestionsDetail();
@@ -217,6 +263,8 @@ mixin _ScoringUtilsMixin on State<QuizPage> {
     _quizState.setState(() => _quizState._isSubmitting = true);
 
     try {
+      // 提交前批改所有未批改的操作题
+      await _gradeAllOperationQuestions();
       final result = _calculateScore();
       final answers = _convertAnswersForJson();
       final questionsDetail = _buildQuestionsDetail();

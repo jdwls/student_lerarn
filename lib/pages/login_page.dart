@@ -36,21 +36,13 @@ class _LoginPageState extends State<LoginPage> {
     if (!mounted) return;
 
     final authProvider = context.read<AuthProvider>();
-    // 检查是否已保存自动登录信息
-    final prefs = await SharedPreferences.getInstance();
-    final savedUserId = prefs.getString('auto_login_user_id') ?? '';
-    final savedName = prefs.getString('saved_name') ?? '';
-    final savedPassword = prefs.getString('saved_password') ?? '';
-
-    if (savedUserId.isNotEmpty && savedName.isNotEmpty && savedPassword.isNotEmpty) {
-      // 有保存的自动登录信息，尝试自动登录
-      final success = await authProvider.login(savedName, savedPassword);
-      if (success && mounted) {
-        // ignore: use_build_context_synchronously
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const MainHomePage()),
-        );
-      }
+    // 按设备信息自动登录（电脑名+IP匹配）
+    await authProvider.attemptAutoLogin();
+    if (mounted && authProvider.isLoggedIn) {
+      // ignore: use_build_context_synchronously
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const MainHomePage()),
+      );
     }
   }
 
@@ -72,7 +64,8 @@ class _LoginPageState extends State<LoginPage> {
       }
     } catch (_) {}
   }
-Future<void> _handleLogin() async {
+
+  Future<void> _handleLogin() async {
     if (_formKey.currentState!.validate()) {
       final apiService = context.read<ApiService>();
       final authProvider = context.read<AuthProvider>();
@@ -218,7 +211,7 @@ Future<void> _handleLogin() async {
                                 ),
                               ),
                               const SizedBox(height: 16),
-Row(
+                              Row(
                                 children: [
                                   Checkbox(
                                     value: _rememberMe,

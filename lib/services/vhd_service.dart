@@ -85,6 +85,22 @@ class VhdService {
     return null;
   }
 
+  /// 规范化操作题路径：去除 "题库/{bankName}/操作题/" 前缀，只保留题目目录及文件名
+  /// 例如: "题库/2/操作题/题目1/新建文本文档.txt" -> "题目1\新建文本文档.txt"
+  /// 同时将正斜杠替换为系统路径分隔符
+  static String _normalizePath(String path) {
+    if (path.isEmpty) return '';
+    // 统一使用系统路径分隔符
+    String result = path.replaceAll('/', Platform.pathSeparator);
+    // 查找 "操作题" 并取其后部分
+    final keyPart = '${Platform.pathSeparator}操作题${Platform.pathSeparator}';
+    final idx = result.indexOf(keyPart);
+    if (idx >= 0) {
+      result = result.substring(idx + keyPart.length);
+    }
+    return result;
+  }
+
   /// 写入初始文件到虚拟驱动器
   static Future<bool> writeInitialFiles(List<Map<String, dynamic>> files) async {
     if (!_isMounted || _mountDrive == null) return false;
@@ -99,12 +115,15 @@ class VhdService {
 
         // 如果提供了 bankPath，从本地复制文件
         if (bankPath != null && filePath != null && filePath.isNotEmpty) {
-          // filePath可能是"操作题/题目1/脚本.txt"这样的子路径
-          final sourceFile = File('$bankPath${Platform.pathSeparator}$filePath');
+          // 规范化路径：去除 "题库/{bankName}/操作题/" 前缀，统一分隔符
+          final normalizedFilePath = _normalizePath(filePath);
+          // 如果规范化后为空，说明路径可能只是文件名，直接使用 filePath
+          final effectiveRelPath = normalizedFilePath.isNotEmpty ? normalizedFilePath : filePath.replaceAll('/', Platform.pathSeparator);
+          final sourceFile = File('$bankPath${Platform.pathSeparator}$effectiveRelPath');
           debugPrint('[writeFiles] 尝试复制: ${sourceFile.path}, exists=${await sourceFile.exists()}');
           if (await sourceFile.exists()) {
             // 保持与源文件相同的子目录结构
-            final targetFile = File('$_mountDrive${Platform.pathSeparator}$filePath');
+            final targetFile = File('$_mountDrive${Platform.pathSeparator}$effectiveRelPath');
             await targetFile.parent.create(recursive: true);
             await sourceFile.copy(targetFile.path);
             debugPrint('[writeFiles] 复制成功: ${sourceFile.path} -> ${targetFile.path}');
@@ -112,13 +131,25 @@ class VhdService {
           }
         }
 
-        // 写入内容到虚拟驱动器
-        final targetFile = File('$_mountDrive${Platform.pathSeparator}$fileName');
-        await targetFile.parent.create(recursive: true);
-        if (content != null && content.isNotEmpty) {
-          await targetFile.writeAsString(content);
+        // 写入内容到虚拟驱动器（使用规范化后的相对路径，保留子目录结构）
+        if (filePath != null && filePath.isNotEmpty) {
+          final normalizedFilePath = _normalizePath(filePath);
+          final effectiveRelPath = normalizedFilePath.isNotEmpty ? normalizedFilePath : filePath.replaceAll('/', Platform.pathSeparator);
+          final targetFile = File('$_mountDrive${Platform.pathSeparator}$effectiveRelPath');
+          await targetFile.parent.create(recursive: true);
+          if (content != null && content.isNotEmpty) {
+            await targetFile.writeAsString(content);
+          } else {
+            await targetFile.writeAsString('');
+          }
         } else {
-          await targetFile.writeAsString('');
+          final targetFile = File('$_mountDrive${Platform.pathSeparator}$fileName');
+          await targetFile.parent.create(recursive: true);
+          if (content != null && content.isNotEmpty) {
+            await targetFile.writeAsString(content);
+          } else {
+            await targetFile.writeAsString('');
+          }
         }
       }
       return true;
@@ -150,7 +181,7 @@ class VhdService {
       for (int ai = 0; ai < answers.length; ai++) {
         final answer = answers[ai];
         // 扁平结构：每个 answer 就是一个行检查项
-        final targetPath = answer['targetPath'] as String? ?? '';
+        final rawTargetPath = answer['targetPath'] as String? ?? '';
         final lineNumber = answer['lineNumber'] as int? ?? 1;
         final expectedContent = answer['expectedContent'] as String? ?? '';
         final itemScore = answer['score'] as int? ?? 5;
@@ -159,7 +190,9 @@ class VhdService {
         int earnedScore = 0;
         bool passed = true;
 
-        debugPrint('[checkAnswers] 检查项 $ai: targetPath="$targetPath", lineNumber=$lineNumber, expected="$expectedContent", score=$itemScore');
+        // 规范化目标路径
+        final targetPath = _normalizePath(rawTargetPath);
+        debugPrint('[checkAnswers] 检查项 $ai: rawTargetPath="$rawTargetPath", normalizedPath="$targetPath", lineNumber=$lineNumber, expected="$expectedContent", score=$itemScore');
 
         if (targetPath.isNotEmpty && lineNumber > 0 && expectedContent.isNotEmpty) {
           // 逐行检查：读取指定行号的内容，与期望内容对比
