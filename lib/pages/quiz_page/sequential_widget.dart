@@ -7,12 +7,17 @@ mixin _SequentialWidgetMixin on State<QuizPage> {
   /// 顺序题
   Widget _buildSequentialQuestion(Map<String, dynamic> question) {
     final items = question['items'] as List<dynamic>? ?? [];
-    final savedAnswer = _quizState._answers[_quizState._currentQuestionIndex] as List?;
-    final userOrder = (savedAnswer?.isNotEmpty == true)
-        ? savedAnswer!
-            .map((e) => int.tryParse(e.toString()) ?? 0)
-            .toList()
-        : List.generate(items.length, (i) => i);
+    final itemIds =
+        items.map((item) => (item as Map)['id']?.toString() ?? '').toList();
+    final savedAnswer =
+        _quizState._answers[_quizState._currentQuestionIndex] as List?;
+    final savedIds = savedAnswer
+        ?.map((e) => e.toString())
+        .where((id) => itemIds.contains(id))
+        .toList();
+    final userOrder = (savedIds?.length == itemIds.length)
+        ? List<String>.from(savedIds!)
+        : List<String>.from(itemIds);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -28,8 +33,8 @@ mixin _SequentialWidgetMixin on State<QuizPage> {
           ),
           child: Text(
             question['questionText'] ?? '',
-            style: const TextStyle(
-                fontSize: 31.2,
+            style: TextStyle(
+                fontSize: 31.2 * _quizState._contentScale,
                 fontWeight: FontWeight.bold,
                 color: Colors.black,
                 fontFamily: 'SimHei'),
@@ -75,11 +80,15 @@ mixin _SequentialWidgetMixin on State<QuizPage> {
             });
           },
           itemBuilder: (context, index) {
-            final itemIndex = userOrder[index];
+            final itemId = userOrder[index];
+            final itemIndex = itemIds.indexOf(itemId);
+            if (itemIndex < 0 || itemIndex >= items.length) {
+              return const SizedBox.shrink();
+            }
             final item = items[itemIndex];
 
             return ReorderableDragStartListener(
-              key: ValueKey(itemIndex),
+              key: ValueKey(itemId),
               index: index,
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 200),
@@ -129,8 +138,8 @@ mixin _SequentialWidgetMixin on State<QuizPage> {
                     children: [
                       Text(
                         item['text'] ?? '',
-                        style: const TextStyle(
-                          fontSize: 30,
+                        style: TextStyle(
+                          fontSize: 30 * _quizState._contentScale,
                           fontWeight: FontWeight.bold,
                           color: Colors.black,
                           fontFamily: 'SimHei',

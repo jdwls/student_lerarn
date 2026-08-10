@@ -50,7 +50,8 @@ mixin _ScoringUtilsMixin on State<QuizPage> {
 
       if (type == 'operation') {
         // 操作题：不管有没有作答，都使用实际批改得分
-        final operationScore = (answer is Map ? answer['score'] : null) as int? ?? 0;
+        final operationScore =
+            (answer is Map ? answer['score'] : null) as int? ?? 0;
         totalScore += operationScore;
         typeStats[typeName]!['score'] =
             (typeStats[typeName]!['score'] as int? ?? 0) + operationScore;
@@ -98,7 +99,8 @@ mixin _ScoringUtilsMixin on State<QuizPage> {
   Future<void> _savePendingSubmission(
       int totalScore,
       Map<String, dynamic> answers,
-      List<Map<String, dynamic>> questionsDetail) async {
+      List<Map<String, dynamic>> questionsDetail,
+      String classId) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final pending = prefs.getStringList('pending_submissions') ?? [];
@@ -106,6 +108,7 @@ mixin _ScoringUtilsMixin on State<QuizPage> {
         'studentId': _quizState.widget.studentId,
         'studentName': _quizState.widget.studentName,
         'bankName': _quizState._selectedBank ?? '',
+        'classId': classId,
         'score': totalScore,
         'answers': answers,
         'questionsDetail': questionsDetail,
@@ -129,9 +132,7 @@ mixin _ScoringUtilsMixin on State<QuizPage> {
       final question = _quizState._currentQuestions[i];
       if (question['type'] != 'operation') continue;
 
-      // 跳过已批改的（有得分的操作题已经批改过）
-      final existingAnswer = _quizState._answers[i];
-      if (existingAnswer is Map && existingAnswer.containsKey('score')) continue;
+      // 每次提交前重新批改，不信任本地缓存中的 score 字段
 
       // 获取该题目的检查点
       final answers = question['answers'] as List<dynamic>? ?? [];
@@ -142,7 +143,10 @@ mixin _ScoringUtilsMixin on State<QuizPage> {
 
       try {
         final checkResult = await VhdService.checkAnswersWithDetails(
-          answers.cast<Map<String, dynamic>>(),
+          answers
+              .whereType<Map>()
+              .map((item) => Map<String, dynamic>.from(item))
+              .toList(),
         );
         final operationScore = checkResult['totalScore'] as int? ?? 0;
 
@@ -207,6 +211,7 @@ mixin _ScoringUtilsMixin on State<QuizPage> {
     try {
       // 提交前批改所有未批改的操作题
       await _gradeAllOperationQuestions();
+      if (!_quizState.mounted) return;
       final result = _calculateScore();
       final answers = _convertAnswersForJson();
       final questionsDetail = _buildQuestionsDetail();
@@ -226,8 +231,11 @@ mixin _ScoringUtilsMixin on State<QuizPage> {
 
       if (!success) {
         await _savePendingSubmission(
-            result.totalScore, answers, questionsDetail);
+            result.totalScore, answers, questionsDetail, classId);
       }
+
+      // 提交后清理虚拟磁盘
+      await _cleanupVirtualDriveAfterSubmit();
 
       if (_quizState.mounted) {
         _navigateToResult(
@@ -255,6 +263,29 @@ mixin _ScoringUtilsMixin on State<QuizPage> {
     }
   }
 
+  /// 提交后清理虚拟磁盘（卸载 subst 虚拟驱动器）并恢复窗口
+  Future<void> _cleanupVirtualDriveAfterSubmit() async {
+    // 停止窗口状态监控
+    _quizState._stopWindowCheck();
+    // 卸载并清理虚拟驱动器
+    try {
+      await VhdService.unmountAndCleanup();
+      debugPrint('提交后虚拟磁盘已清理');
+    } catch (e) {
+      debugPrint('提交后清理虚拟磁盘失败: $e');
+    }
+    // 恢复窗口状态（如果操作题浮动窗口还在，重置窗口参数）
+    try {
+      await windowManager.setAlwaysOnTop(false);
+      await windowManager.setBackgroundColor(Colors.transparent);
+      await windowManager.setMinimumSize(const Size(1280, 720));
+      await windowManager.setAlignment(Alignment.center);
+      await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
+    } catch (e) {
+      debugPrint('提交后恢复窗口状态失败: $e');
+    }
+  }
+
   /// Auto-submit when time runs out
   Future<void> _autoSubmitExam() async {
     debugPrint('Time\'s up, auto-submitting...');
@@ -265,6 +296,7 @@ mixin _ScoringUtilsMixin on State<QuizPage> {
     try {
       // 提交前批改所有未批改的操作题
       await _gradeAllOperationQuestions();
+      if (!_quizState.mounted) return;
       final result = _calculateScore();
       final answers = _convertAnswersForJson();
       final questionsDetail = _buildQuestionsDetail();
@@ -284,8 +316,11 @@ mixin _ScoringUtilsMixin on State<QuizPage> {
 
       if (!success) {
         await _savePendingSubmission(
-            result.totalScore, answers, questionsDetail);
+            result.totalScore, answers, questionsDetail, classId);
       }
+
+      // 自动提交后清理虚拟磁盘
+      await _cleanupVirtualDriveAfterSubmit();
 
       if (_quizState.mounted) {
         _navigateToResult(
@@ -351,17 +386,51 @@ mixin _ScoringUtilsMixin on State<QuizPage> {
       case 'choice':
         return answer == question['answer'];
       case 'matching':
-        final correctMapping =
-            question['correctMapping'] as Map<dynamic, dynamic>? ?? {};
-        final userMapping = answer as Map<dynamic, dynamic>? ?? {};
+        final rawCorrect = question['correctMapping'];
+        final correctMapping = <String, String>{};
+        if (rawCorrect is Map) {
+          rawCorrect.forEach((key, value) {
+            correctMapping[key.toString()] = value.toString();
+          });
+        }
+        final userMapping = <String, String>{};
+        if (answer is Map) {
+          final hasStableMapping = answer['mapping'] is Map;
+          final rawMapping =
+              hasStableMapping ? answer['mapping'] as Map : answer;
+          final items = question['items'] as List<dynamic>? ?? [];
+          rawMapping.forEach((key, value) {
+            if (hasStableMapping) {
+              userMapping[key.toString()] = value.toString();
+              return;
+            }
+            final leftIndex = int.tryParse(key.toString());
+            final rightIndex = int.tryParse(value.toString());
+            if (leftIndex != null &&
+                rightIndex != null &&
+                leftIndex >= 0 &&
+                leftIndex < items.length &&
+                rightIndex >= 0 &&
+                rightIndex < items.length) {
+              final leftId =
+                  items[leftIndex]['leftId']?.toString() ?? '$leftIndex';
+              final rightId =
+                  items[rightIndex]['rightId']?.toString() ?? '$rightIndex';
+              userMapping[leftId] = rightId;
+            }
+          });
+        }
         if (correctMapping.length != userMapping.length) return false;
         for (final entry in correctMapping.entries) {
           if (userMapping[entry.key] != entry.value) return false;
         }
         return true;
       case 'sequential':
-        final correct = question['answer'] as List<dynamic>? ?? [];
-        final userAnswer = answer as List<dynamic>? ?? [];
+        final correct = (question['answer'] as List<dynamic>? ?? [])
+            .map((e) => e.toString())
+            .toList();
+        final userAnswer =
+            (answer as List<dynamic>? ?? []).map((e) => e.toString()).toList();
         if (correct.length != userAnswer.length) return false;
         for (int i = 0; i < correct.length; i++) {
           if (correct[i] != userAnswer[i]) return false;
@@ -370,7 +439,12 @@ mixin _ScoringUtilsMixin on State<QuizPage> {
       case 'typing':
         return (answer is Map) && answer.containsKey('score');
       case 'operation':
-        return answer is Map;
+        // 操作题判断：必须是Map且得分大于0才算正确
+        return answer is Map &&
+            (answer['score'] is int
+                    ? answer['score'] as int
+                    : int.tryParse(answer['score']?.toString() ?? '0') ?? 0) >
+                0;
       default:
         return false;
     }
@@ -404,9 +478,38 @@ mixin _ScoringUtilsMixin on State<QuizPage> {
       if (answer != null) {
         final type = question['type'] as String? ?? '';
         final number = question['number'] as String? ?? '${i + 1}';
+        // 将 answer 中的 Map key 转换为 String，避免 JsonUnsupportedObjectError
+        Object? jsonSafe = answer;
+        if (answer is Map) {
+          if (type == 'matching') {
+            final stableMapping = <String, dynamic>{};
+            final items = question['items'] as List<dynamic>? ?? [];
+            answer.forEach((leftIndex, rightIndex) {
+              final li = int.tryParse(leftIndex.toString());
+              final ri = int.tryParse(rightIndex.toString());
+              if (li != null &&
+                  ri != null &&
+                  li >= 0 &&
+                  li < items.length &&
+                  ri >= 0 &&
+                  ri < items.length) {
+                final leftId = items[li]['leftId']?.toString() ?? '$li';
+                final rightId = items[ri]['rightId']?.toString() ?? '$ri';
+                stableMapping[leftId] = rightId;
+              }
+            });
+            jsonSafe = {
+              'mapping': stableMapping,
+              // 保留旧索引映射，兼容教师端旧版本。
+              'index_mapping': answer.map((k, v) => MapEntry(k.toString(), v)),
+            };
+          } else {
+            jsonSafe = answer.map((k, v) => MapEntry(k.toString(), v));
+          }
+        }
         answers[number.toString()] = {
           'type': type,
-          'answer': answer,
+          'answer': jsonSafe,
           'correct': _isAnswerCorrect(question, answer),
         };
       }

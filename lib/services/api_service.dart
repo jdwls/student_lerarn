@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import '../utils/app_path.dart';
+import 'local_storage_service.dart';
 
 class ApiService {
   // API 端口（写死）
@@ -16,6 +17,8 @@ class ApiService {
 
   // 使用静态单例Client，避免重复创建和关闭问题
   static final http.Client _sharedClient = http.Client();
+
+  static const Duration _defaultTimeout = Duration(seconds: 10);
 
   // 暴露共享Client供直接使用
   http.Client get client => _sharedClient;
@@ -37,6 +40,53 @@ class ApiService {
       }
     } catch (e) {
       print('读取配置文件失败，使用默认值: $e');
+    }
+  }
+
+  /// 启动时串行消费打字成绩待同步队列；成功后才移除记录。
+  static Future<void> drainPendingTypingSubmissions() async {
+    try {
+      final storage = LocalStorageService.instance;
+      // 与写入端共用同一文件锁，避免消费与新增成绩并发读写导致记录丢失
+      await storage.withFileLock('pending_typing_submissions.json', () async {
+        final pending =
+            await storage.readJson('pending_typing_submissions.json');
+        final raw = pending['submissions'];
+        if (raw is! List || raw.isEmpty) return;
+
+        final remaining = <Map<String, dynamic>>[];
+        for (final entry in raw) {
+          if (entry is! Map) continue;
+          final payload = Map<String, dynamic>.from(entry);
+          try {
+            final response = await _sharedClient
+                .post(
+                  Uri.parse('$baseUrl/score/typing'),
+                  headers: {'Content-Type': 'application/json'},
+                  body: json.encode(payload),
+                )
+                .timeout(const Duration(seconds: 5));
+            final data = response.statusCode == 200
+                ? json.decode(response.body)
+                : null;
+            if (data is Map && data['success'] == true) continue;
+          } catch (_) {
+            // 保留记录，等待下一次启动或网络恢复时重试。
+          }
+          payload['retry_count'] =
+              (payload['retry_count'] is num
+                  ? (payload['retry_count'] as num).toInt()
+                  : int.tryParse(payload['retry_count']?.toString() ?? '') ?? 0) +
+              1;
+          payload['last_retry_at'] = DateTime.now().toIso8601String();
+          remaining.add(payload);
+        }
+        await storage.writeJson('pending_typing_submissions.json', {
+          'submissions': remaining,
+        });
+      });
+    } catch (_) {
+      // 队列损坏或存储不可用时不影响正常启动。
     }
   }
 
@@ -67,7 +117,7 @@ class ApiService {
       final response = await client.get(
         Uri.parse('$baseUrl$endpoint'),
         headers: _buildHeaders(),
-      );
+      ).timeout(_defaultTimeout);
 
       if (response.statusCode == 200) {
         return json.decode(response.body);
@@ -89,7 +139,7 @@ class ApiService {
         Uri.parse(url),
         headers: _buildHeaders(),
         body: json.encode(data),
-      );
+      ).timeout(_defaultTimeout);
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         return json.decode(response.body);
@@ -108,7 +158,7 @@ class ApiService {
         Uri.parse('$baseUrl$endpoint'),
         headers: _buildHeaders(),
         body: json.encode(data),
-      );
+      ).timeout(_defaultTimeout);
 
       if (response.statusCode == 200) {
         return json.decode(response.body);
@@ -125,7 +175,7 @@ class ApiService {
       final response = await client.delete(
         Uri.parse('$baseUrl$endpoint'),
         headers: _buildHeaders(),
-      );
+      ).timeout(_defaultTimeout);
 
       return response.statusCode == 200 || response.statusCode == 204;
     } catch (e) {

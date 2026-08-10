@@ -7,6 +7,7 @@ import 'providers/auth_provider.dart';
 import 'providers/exam_provider.dart';
 import 'providers/user_provider.dart';
 import 'services/api_service.dart';
+import 'services/quiz_service.dart';
 import 'services/socket_service.dart';
 import 'services/single_instance_service.dart';
 import 'theme/app_theme.dart';
@@ -14,12 +15,21 @@ import 'theme/app_theme.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 并行初始化
+  // 先初始化 ApiService（读取配置）
+  await ApiService.init();
+  await QuizService.init();
+  // 启动时尝试消费上次网络失败的成绩队列
+  await ApiService.drainPendingTypingSubmissions();
+  // 小测队列消费与网络初始化失败时不影响启动
+  try {
+    await QuizService.drainPendingExamSubmissions();
+  } catch (_) {}
+
+  // 并行初始化其他服务，任一失败不影响启动
   final results = await Future.wait([
-    SingleInstanceService.tryAcquire(),
-    ApiService.init(),
-    SocketService.init(),
-    windowManager.ensureInitialized(),
+    SingleInstanceService.tryAcquire().catchError((_) => false),
+    SocketService.init().catchError((_) {}),
+    windowManager.ensureInitialized().catchError((_) {}),
   ]);
 
   final isSingleInstance = results[0] as bool;
@@ -70,17 +80,60 @@ void main() async {
 
   runApp(StudentApp(useCustomTitleBar: useCustomTitleBar));
 }
-class StudentApp extends StatelessWidget {
+
+class StudentApp extends StatefulWidget {
   final bool useCustomTitleBar;
   const StudentApp({super.key, this.useCustomTitleBar = true});
 
   @override
+  State<StudentApp> createState() => _StudentAppState();
+}
+
+class _StudentAppState extends State<StudentApp> with WidgetsBindingObserver {
+  bool _cleanupStarted = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.detached) {
+      _cleanupServices();
+    }
+  }
+
+  Future<void> _cleanupServices() async {
+    if (_cleanupStarted) return;
+    _cleanupStarted = true;
+    try {
+      SocketService.instance.disconnect();
+    } catch (_) {}
+    try {
+      await SingleInstanceService.release();
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _cleanupServices();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final apiService = ApiService();
     return MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => AuthProvider()),
-        ChangeNotifierProvider(create: (_) => UserProvider()),
-        ChangeNotifierProvider(create: (_) => ExamProvider()),
+        ChangeNotifierProvider(
+            create: (_) => AuthProvider(apiService: apiService)),
+        ChangeNotifierProvider(
+            create: (_) => UserProvider(apiService: apiService)),
+        ChangeNotifierProvider(
+            create: (_) => ExamProvider(apiService: apiService)),
       ],
       child: MaterialApp(
         title: '学生端',

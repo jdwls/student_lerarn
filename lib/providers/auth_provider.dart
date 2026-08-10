@@ -9,10 +9,13 @@ import '../services/socket_service.dart';
 const String _defaultClassId = '初一01班';
 
 class AuthProvider extends ChangeNotifier {
-  ApiService _apiService = ApiService(); // 默认实例
+  ApiService _apiService;
   UserModel? _currentUser;
   bool _isLoading = false;
   String? _error;
+
+  AuthProvider({ApiService? apiService})
+      : _apiService = apiService ?? ApiService();
 
   /// 设置 API 服务（由 Provider 注入）
   void setApiService(ApiService apiService) {

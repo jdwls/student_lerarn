@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -24,11 +25,16 @@ class _RegisterPageState extends State<RegisterPage> {
   bool _obscureConfirmPassword = true;
   String _selectedClass = '';
   bool _isLoadingClass = true;
+  Timer? _classPollTimer;
 
   @override
   void initState() {
     super.initState();
     _loadTeacherSelectedClass();
+    // 每5秒轮询教师端班级变化
+    _classPollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      _loadTeacherSelectedClass();
+    });
   }
 
   Future<void> _loadTeacherSelectedClass() async {
@@ -38,10 +44,12 @@ class _RegisterPageState extends State<RegisterPage> {
       final response = await apiService.get('/active-class');
       final classId = response['class_id'] as String? ?? '';
       if (mounted && classId.isNotEmpty) {
-        setState(() {
-          _selectedClass = classId;
-          _isLoadingClass = false;
-        });
+        if (_selectedClass != classId) {
+          setState(() {
+            _selectedClass = classId;
+          });
+        }
+        _isLoadingClass = false;
         return;
       }
     } catch (e) {
@@ -53,24 +61,30 @@ class _RegisterPageState extends State<RegisterPage> {
       final prefs = await SharedPreferences.getInstance();
       final teacherClass = prefs.getString('selected_class_label');
       if (mounted && teacherClass != null && teacherClass.isNotEmpty) {
-        setState(() {
-          _selectedClass = teacherClass;
-          _isLoadingClass = false;
-        });
+        if (_selectedClass != teacherClass) {
+          setState(() {
+            _selectedClass = teacherClass;
+          });
+        }
+        _isLoadingClass = false;
         return;
       }
     } catch (e) {}
 
-    if (mounted) {
+    if (mounted && _selectedClass.isEmpty) {
       setState(() {
         _selectedClass = '初一01班';
         _isLoadingClass = false;
       });
+    } else if (mounted) {
+      _isLoadingClass = false;
     }
   }
 
   @override
   void dispose() {
+    _classPollTimer?.cancel();
+    _classPollTimer = null;
     _nameController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();

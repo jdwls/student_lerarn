@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:provider/provider.dart';
+import 'package:window_manager/window_manager.dart';
 import '../providers/auth_provider.dart';
 import '../providers/user_provider.dart';
 import '../services/api_service.dart';
@@ -81,6 +82,26 @@ class _MainHomePageState extends State<MainHomePage> with RouteAware {
       _startPolling();
       debugPrint('首页轮询已恢复（页面返回）');
     }
+    // 确保窗口恢复为正常状态（从小测返回后恢复窗口框架）
+    _restoreWindowToNormal();
+  }
+
+  /// 从小测返回后恢复窗口为正常状态（非全屏，正常窗口大小）
+  Future<void> _restoreWindowToNormal() async {
+    try {
+      await windowManager.setAlwaysOnTop(false);
+      // 恢复为透明背景（与学生端 main.dart 初始化一致）
+      await windowManager.setBackgroundColor(Colors.transparent);
+      await windowManager.setMinimumSize(const Size(1280, 720));
+      await windowManager.setAlignment(Alignment.center);
+      await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
+      await windowManager.setFullScreen(false);
+      await windowManager.setSize(const Size(1280, 720));
+      await windowManager.center();
+      debugPrint('首页窗口已恢复为正常大小');
+    } catch (e) {
+      debugPrint('恢复首页窗口失败: $e');
+    }
   }
 
   /// 启动轮询
@@ -95,6 +116,7 @@ class _MainHomePageState extends State<MainHomePage> with RouteAware {
   Future<void> _fetchActiveClass() async {
     try {
       final response = await _apiService.get('/active-class');
+      if (!mounted) return;
       if (response['success'] == true) {
         final activeClassId = response['class_id'] as String? ?? '';
         if (activeClassId.isNotEmpty && activeClassId != _activeClassId) {
@@ -447,6 +469,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   }
 
   Future<void> _loadScoreData() async {
+    if (!mounted) return;
     setState(() {
       _isLoading = true;
       _error = null;
@@ -473,6 +496,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
       final encodedClassId = Uri.encodeComponent(classId);
       debugPrint('请求URL: /score/summary/$encodedClassId');
       final response = await _apiService.get('/score/summary/$encodedClassId');
+      if (!mounted) return;
       debugPrint('API 响应: success=${response['success']}');
       debugPrint(
           'exam_records: ${(response['exam_records'] as List?)?.length ?? 0}');
@@ -524,11 +548,13 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
         _error = response['error']?.toString() ?? '获取数据失败';
       }
 
+      if (!mounted) return;
       setState(() {
         _isLoading = false;
       });
     } catch (e) {
       debugPrint('加载成绩数据异常: $e');
+      if (!mounted) return;
       setState(() {
         _isLoading = false;
         _error = '网络请求失败: $e';
@@ -1209,7 +1235,7 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
             sideTitles: SideTitles(showTitles: false),
           ),
         ),
-                borderData: FlBorderData(show: false),
+        borderData: FlBorderData(show: false),
         lineTouchData: LineTouchData(
           enabled: true,
           touchTooltipData: LineTouchTooltipData(
@@ -1272,5 +1298,3 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     );
   }
 }
-
-

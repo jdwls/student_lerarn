@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
 
 /// 虚拟驱动器管理服务
 /// 负责虚拟驱动器（subst）的挂载、卸载、文件写入和答案检查
@@ -16,20 +17,9 @@ class VhdService {
   /// 清理所有 subst 虚拟驱动器
   static Future<void> cleanupAllSubstDrives() async {
     try {
-      // 先解除当前记录的盘符
+      // 只解除本服务自己记录的盘符，不能卸载系统中其他应用的 subst 映射。
       if (_mountDrive != null) {
-        await Process.run('subst', ['$_mountDrive\\', '/d']);
-      }
-      // 再清理系统中所有 subst（防止残留）
-      final result = await Process.run('subst', []);
-      if (result.exitCode == 0) {
-        final lines = (result.stdout as String).split('\n');
-        for (final line in lines) {
-          final match = RegExp(r'^(\w:)\\').firstMatch(line.trim());
-          if (match != null) {
-            await Process.run('subst', [match.group(1)!, '/d']);
-          }
-        }
+        await Process.run('subst', ['$_mountDrive', '/d']);
       }
       _mountDrive = null;
       _isMounted = false;
@@ -85,20 +75,40 @@ class VhdService {
     return null;
   }
 
-  /// 规范化操作题路径：去除 "题库/{bankName}/操作题/" 前缀，只保留题目目录及文件名
-  /// 例如: "题库/2/操作题/题目1/新建文本文档.txt" -> "题目1\新建文本文档.txt"
-  /// 同时将正斜杠替换为系统路径分隔符
-  static String _normalizePath(String path) {
-    if (path.isEmpty) return '';
-    // 统一使用系统路径分隔符
-    String result = path.replaceAll('/', Platform.pathSeparator);
-    // 查找 "操作题" 并取其后部分
+  /// 规范化并校验操作题相对路径，拒绝绝对路径和路径遍历。
+  static String? _safeRelativePath(String rawPath) {
+    if (rawPath.isEmpty || rawPath.codeUnits.contains(0)) return null;
+    var result = rawPath.replaceAll('/', Platform.pathSeparator);
     final keyPart = '${Platform.pathSeparator}操作题${Platform.pathSeparator}';
     final idx = result.indexOf(keyPart);
-    if (idx >= 0) {
-      result = result.substring(idx + keyPart.length);
+    if (idx >= 0) result = result.substring(idx + keyPart.length);
+    if (result.startsWith(Platform.pathSeparator) ||
+        RegExp(r'^[A-Za-z]:').hasMatch(result) ||
+        result.startsWith('\\\\')) return null;
+    final normalized = p.normalize(result);
+    if (normalized.isEmpty || normalized == '.' || p.isAbsolute(normalized)) {
+      return null;
     }
-    return result;
+    final parts = normalized.split(Platform.pathSeparator);
+    if (parts.any((part) => part.isEmpty || part == '..')) return null;
+    return normalized;
+  }
+
+  static Future<String?> _safePathWithin(
+      String rootPath, String relativePath) async {
+    final relative = _safeRelativePath(relativePath);
+    if (relative == null) return null;
+    try {
+      final root = p.normalize(await Directory(rootPath).resolveSymbolicLinks());
+      final candidate = p.normalize(p.join(root, relative));
+      final prefix = root.endsWith(Platform.pathSeparator)
+          ? root
+          : '$root${Platform.pathSeparator}';
+      if (candidate != root && !candidate.startsWith(prefix)) return null;
+      return candidate;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// 写入初始文件到虚拟驱动器
@@ -115,15 +125,15 @@ class VhdService {
 
         // 如果提供了 bankPath，从本地复制文件
         if (bankPath != null && filePath != null && filePath.isNotEmpty) {
-          // 规范化路径：去除 "题库/{bankName}/操作题/" 前缀，统一分隔符
-          final normalizedFilePath = _normalizePath(filePath);
-          // 如果规范化后为空，说明路径可能只是文件名，直接使用 filePath
-          final effectiveRelPath = normalizedFilePath.isNotEmpty ? normalizedFilePath : filePath.replaceAll('/', Platform.pathSeparator);
-          final sourceFile = File('$bankPath${Platform.pathSeparator}$effectiveRelPath');
+          final normalizedFilePath = _safeRelativePath(filePath);
+          if (normalizedFilePath == null) continue;
+          final sourcePath = await _safePathWithin(bankPath, normalizedFilePath);
+          final targetPath = await _safePathWithin(_mountDrive!, normalizedFilePath);
+          if (sourcePath == null || targetPath == null) continue;
+          final sourceFile = File(sourcePath);
           debugPrint('[writeFiles] 尝试复制: ${sourceFile.path}, exists=${await sourceFile.exists()}');
           if (await sourceFile.exists()) {
-            // 保持与源文件相同的子目录结构
-            final targetFile = File('$_mountDrive${Platform.pathSeparator}$effectiveRelPath');
+            final targetFile = File(targetPath);
             await targetFile.parent.create(recursive: true);
             await sourceFile.copy(targetFile.path);
             debugPrint('[writeFiles] 复制成功: ${sourceFile.path} -> ${targetFile.path}');
@@ -133,9 +143,11 @@ class VhdService {
 
         // 写入内容到虚拟驱动器（使用规范化后的相对路径，保留子目录结构）
         if (filePath != null && filePath.isNotEmpty) {
-          final normalizedFilePath = _normalizePath(filePath);
-          final effectiveRelPath = normalizedFilePath.isNotEmpty ? normalizedFilePath : filePath.replaceAll('/', Platform.pathSeparator);
-          final targetFile = File('$_mountDrive${Platform.pathSeparator}$effectiveRelPath');
+          final effectiveRelPath = _safeRelativePath(filePath);
+          if (effectiveRelPath == null) continue;
+          final targetPath = await _safePathWithin(_mountDrive!, effectiveRelPath);
+          if (targetPath == null) continue;
+          final targetFile = File(targetPath);
           await targetFile.parent.create(recursive: true);
           if (content != null && content.isNotEmpty) {
             await targetFile.writeAsString(content);
@@ -143,7 +155,11 @@ class VhdService {
             await targetFile.writeAsString('');
           }
         } else {
-          final targetFile = File('$_mountDrive${Platform.pathSeparator}$fileName');
+          final effectiveRelPath = _safeRelativePath(fileName);
+          if (effectiveRelPath == null) continue;
+          final targetPath = await _safePathWithin(_mountDrive!, effectiveRelPath);
+          if (targetPath == null) continue;
+          final targetFile = File(targetPath);
           await targetFile.parent.create(recursive: true);
           if (content != null && content.isNotEmpty) {
             await targetFile.writeAsString(content);
@@ -191,10 +207,10 @@ class VhdService {
         bool passed = true;
 
         // 规范化目标路径
-        final targetPath = _normalizePath(rawTargetPath);
+        final targetPath = _safeRelativePath(rawTargetPath);
         debugPrint('[checkAnswers] 检查项 $ai: rawTargetPath="$rawTargetPath", normalizedPath="$targetPath", lineNumber=$lineNumber, expected="$expectedContent", score=$itemScore');
 
-        if (targetPath.isNotEmpty && lineNumber > 0 && expectedContent.isNotEmpty) {
+        if (targetPath != null && lineNumber > 0 && expectedContent.isNotEmpty) {
           // 逐行检查：读取指定行号的内容，与期望内容对比
           final fullPath = '$_mountDrive${Platform.pathSeparator}$targetPath';
           debugPrint('[checkAnswers]   行检查: 文件="$fullPath", 行号=$lineNumber, 期望="$expectedContent", 分值=$itemScore');
@@ -224,7 +240,7 @@ class VhdService {
           } else {
             debugPrint('[checkAnswers]   文件不存在: $fullPath');
           }
-        } else if (targetPath.isNotEmpty) {
+        } else if (targetPath != null && targetPath.isNotEmpty) {
           // 没有行号/期望内容时，文件存在即得分
           final fullPath = '$_mountDrive${Platform.pathSeparator}$targetPath';
           debugPrint('[checkAnswers]   无行检查, 直接检查文件存在: $fullPath');
@@ -240,7 +256,7 @@ class VhdService {
 
         totalScore += earnedScore;
         details.add({
-          'targetPath': targetPath,
+          'targetPath': targetPath ?? '',
           'passed': passed,
           'earnedScore': earnedScore,
           'maxScore': itemScore,

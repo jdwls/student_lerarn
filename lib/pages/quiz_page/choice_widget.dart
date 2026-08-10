@@ -25,8 +25,8 @@ mixin _ChoiceWidgetMixin on State<QuizPage> {
             children: [
               Text(
                 question['questionText'] ?? '',
-                style: const TextStyle(
-                    fontSize: 31.2,
+                style: TextStyle(
+                    fontSize: 31.2 * _quizState._contentScale,
                     fontWeight: FontWeight.bold,
                     color: Colors.black,
                     fontFamily: 'SimHei'),
@@ -278,11 +278,11 @@ mixin _ChoiceWidgetMixin on State<QuizPage> {
             // 标签圆圈
             AnimatedContainer(
               duration: const Duration(milliseconds: 200),
-              width: 62,
-              height: 62,
+              width: 62 * _quizState._contentScale,
+              height: 62 * _quizState._contentScale,
               decoration: BoxDecoration(
                 color: isSelected ? AppTheme.primaryColor : Colors.grey[200],
-                borderRadius: BorderRadius.circular(31),
+                borderRadius: BorderRadius.circular(31 * _quizState._contentScale),
                 boxShadow: isSelected
                     ? [
                         BoxShadow(
@@ -297,7 +297,7 @@ mixin _ChoiceWidgetMixin on State<QuizPage> {
                 child: Text(
                   label,
                   style: TextStyle(
-                    fontSize: 28.6,
+                    fontSize: 28.6 * _quizState._contentScale,
                     fontWeight: FontWeight.bold,
                     color: isSelected ? Colors.white : Colors.grey[600],
                   ),
@@ -314,7 +314,7 @@ mixin _ChoiceWidgetMixin on State<QuizPage> {
                   Text(
                     text,
                     style: TextStyle(
-                      fontSize: 26,
+                      fontSize: 26 * _quizState._contentScale,
                       color: isSelected ? AppTheme.primaryColor : Colors.black,
                       fontWeight: FontWeight.bold,
                       fontFamily: 'SimHei',

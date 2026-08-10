@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import '../utils/app_path.dart';
 
 typedef SocketMessageCallback = void Function(Map<String, dynamic> message);
@@ -11,11 +12,14 @@ class SocketService {
 
   Socket? _socket;
   Timer? _heartbeatTimer;
+  Timer? _reconnectTimer;
   String? _studentId;
   bool _isConnected = false;
+  bool _disposed = false;
   String _currentStatus = 'online';
   final _connectionController = StreamController<bool>.broadcast();
   bool _intentionalDisconnect = false;
+  String _messageBuffer = ''; // TCP消息缓冲区（防止粘包/半包）
 
   static String _serverIp = 'localhost';
   static const int _socketPort = 20021;
@@ -33,8 +37,10 @@ class SocketService {
   Stream<bool> get connectionStream => _connectionController.stream;
   bool get isConnected => _isConnected;
 
-  void addMessageCallback(SocketMessageCallback cb) => _messageCallbacks.add(cb);
-  void removeMessageCallback(SocketMessageCallback cb) => _messageCallbacks.remove(cb);
+  void addMessageCallback(SocketMessageCallback cb) =>
+      _messageCallbacks.add(cb);
+  void removeMessageCallback(SocketMessageCallback cb) =>
+      _messageCallbacks.remove(cb);
 
   int _getReconnectDelay() {
     final d = _baseReconnectDelay * (1 << _reconnectAttempts);
@@ -45,13 +51,15 @@ class SocketService {
     try {
       final f = File(AppPath.configFilePath);
       if (await f.exists()) {
-        final data = json.decode(await f.readAsString()) as Map<String, dynamic>;
+        final data =
+            json.decode(await f.readAsString()) as Map<String, dynamic>;
         _serverIp = data['server_ip'] ?? 'localhost';
       }
     } catch (_) {}
   }
 
   Future<void> connect(String studentId) async {
+    if (_disposed) return;
     _intentionalDisconnect = false;
     if (_isConnected) return;
     _studentId = studentId;
@@ -62,9 +70,17 @@ class SocketService {
       _connectionController.add(true);
       _reconnectAttempts = 0;
       _socket!.listen(
-        (d) => _handleMessage(utf8.decode(d)),
-        onError: (_) { _isConnected = false; _connectionController.add(false); if (!_intentionalDisconnect) _reconnect(); },
-        onDone: () { _isConnected = false; _connectionController.add(false); if (!_intentionalDisconnect) _reconnect(); },
+        _onData,
+        onError: (_) {
+          _isConnected = false;
+          _connectionController.add(false);
+          if (!_intentionalDisconnect) _reconnect();
+        },
+        onDone: () {
+          _isConnected = false;
+          _connectionController.add(false);
+          if (!_intentionalDisconnect) _reconnect();
+        },
       );
       _startHeartbeat();
     } catch (e) {
@@ -74,7 +90,19 @@ class SocketService {
     }
   }
 
-  void _handleMessage(String msg) {
+  void _onData(Uint8List data) {
+    _messageBuffer += utf8.decode(data);
+    // 按换行符分割消息（协议：每条JSON消息以\n结尾），防止粘包/半包
+    while (_messageBuffer.contains('\n')) {
+      final splitIndex = _messageBuffer.indexOf('\n');
+      final message = _messageBuffer.substring(0, splitIndex);
+      _messageBuffer = _messageBuffer.substring(splitIndex + 1);
+      if (message.isEmpty) continue;
+      _processMessage(message);
+    }
+  }
+
+  void _processMessage(String msg) {
     try {
       final data = json.decode(msg) as Map<String, dynamic>;
       switch (data['type'] as String? ?? '') {
@@ -88,39 +116,66 @@ class SocketService {
         default:
           break;
       }
-      for (final cb in _messageCallbacks) { try { cb(data); } catch (_) {} }
+      for (final cb in _messageCallbacks) {
+        try {
+          cb(data);
+        } catch (_) {}
+      }
     } catch (_) {}
   }
 
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(Duration(seconds: _heartbeatInterval), (_) => _sendHeartbeat());
+    _heartbeatTimer = Timer.periodic(
+        Duration(seconds: _heartbeatInterval), (_) => _sendHeartbeat());
   }
 
   void _sendHeartbeat() {
     if (_socket != null && _isConnected && _studentId != null) {
-      try { _socket!.write('${json.encode({"type":"heartbeat","student_id":_studentId,"status":_currentStatus})}\n'); } catch (_) {}
+      try {
+        _socket!.write('${json.encode({
+              "type": "heartbeat",
+              "student_id": _studentId,
+              "status": _currentStatus
+            })}\n');
+      } catch (_) {}
     }
   }
 
   void updateStatus(String status) {
     _currentStatus = status;
     if (_socket != null && _isConnected && _studentId != null) {
-      try { _socket!.write('${json.encode({"type":"status_update","student_id":_studentId,"status":status})}\n'); } catch (_) {}
+      try {
+        _socket!.write('${json.encode({
+              "type": "status_update",
+              "student_id": _studentId,
+              "status": status
+            })}\n');
+      } catch (_) {}
     }
   }
 
   void _reconnect() {
-    if (_intentionalDisconnect || _reconnectAttempts >= _maxReconnectAttempts) return;
+    if (_disposed ||
+        _intentionalDisconnect ||
+        _reconnectAttempts >= _maxReconnectAttempts) return;
     final d = _getReconnectDelay();
     _reconnectAttempts++;
-    Future.delayed(Duration(seconds: d), () {
-      if (!_isConnected && _studentId != null && !_intentionalDisconnect) connect(_studentId!);
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer(Duration(seconds: d), () {
+      if (!_disposed &&
+          !_isConnected &&
+          _studentId != null &&
+          !_intentionalDisconnect) {
+        connect(_studentId!);
+      }
     });
   }
 
   void disconnect() {
     _intentionalDisconnect = true;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
     _socket?.close();
@@ -130,7 +185,10 @@ class SocketService {
   }
 
   void dispose() {
+    _disposed = true;
     _intentionalDisconnect = true;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
     _socket?.close();

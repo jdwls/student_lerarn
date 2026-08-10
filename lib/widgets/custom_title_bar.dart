@@ -46,6 +46,7 @@ class _CustomTitleBarState extends State<CustomTitleBar> with WindowListener {
 
   @override
   void onWindowMaximize() {
+    if (!mounted) return;
     setState(() {
       _isMaximized = true;
     });
@@ -53,6 +54,7 @@ class _CustomTitleBarState extends State<CustomTitleBar> with WindowListener {
 
   @override
   void onWindowUnmaximize() {
+    if (!mounted) return;
     setState(() {
       _isMaximized = false;
     });

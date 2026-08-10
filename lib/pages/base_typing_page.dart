@@ -7,9 +7,10 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/user_provider.dart';
-import '../theme/app_theme.dart';
 import '../services/api_service.dart';
+import '../services/local_storage_service.dart';
 import '../services/socket_service.dart';
+import '../theme/app_theme.dart';
 
 /// 打字页面配置
 class TypingConfig {
@@ -46,14 +47,14 @@ abstract class BaseTypingPage extends StatefulWidget {
   const BaseTypingPage({super.key, required this.config});
 }
 
-abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
-    with RouteAware {
+abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> with RouteAware {
   // 配置参数
   TypingConfig get config => widget.config;
 
   // 状态
   int _timeLimitMinutes = 5;
   int _targetSpeed = 20;
+
   /// 评分目标字数 — 教师端可配置，根据目标字数计算比例得分
   /// 当前版本直接使用速度目标评分，此字段保留为后续扩展
   // ignore: unused_field
@@ -69,10 +70,15 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
   bool _isLoadingArticles = true;
   String? _loadError;
 
+  // 教师端指定的文章选择策略
+  bool _randomArticle = true;
+  int? _selectedArticleIndex;
+
   // 打字状态
   String _currentText = '';
   bool _isStarted = false;
   bool _isFinished = false;
+  bool _isFinishing = false;
   bool _isPaused = false;
   Timer? _timer;
   int _remainingSeconds = 300;
@@ -118,6 +124,7 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
   void dispose() {
     routeObserver.unsubscribe(this);
     _timer?.cancel();
+    _timer = null;
     _disposeLineControllers();
     try {
       SocketService.instance.updateStatus('online');
@@ -153,13 +160,23 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
         final data = json.decode(response.body) as Map<String, dynamic>;
         if (data['success'] == true && data['data'] != null) {
           final cfg = data['data'] as Map<String, dynamic>;
+          if (!mounted) return;
+          int parseInt(dynamic value, int fallback) =>
+              value is num ? value.toInt() : int.tryParse(value?.toString() ?? '') ?? fallback;
           setState(() {
-            _timeLimitMinutes = cfg['time_limit'] as int? ?? config.defaultTimeLimitMinutes;
-            _targetSpeed = cfg['target_speed'] as int? ?? config.defaultTargetSpeed;
-            _targetChars = cfg['target_chars'] as int? ?? config.defaultTargetChars;
-            _pointsPerError =
-                (cfg['points_per_error'] as num?)?.toDouble() ?? config.defaultPointsPerError;
+            _timeLimitMinutes = parseInt(cfg['time_limit'], config.defaultTimeLimitMinutes);
+            _targetSpeed = parseInt(cfg['target_speed'], config.defaultTargetSpeed);
+            _targetChars = parseInt(cfg['target_chars'], config.defaultTargetChars);
+            _pointsPerError = (cfg['points_per_error'] is num)
+                ? (cfg['points_per_error'] as num).toDouble()
+                : double.tryParse(cfg['points_per_error']?.toString() ?? '') ??
+                    config.defaultPointsPerError;
+            _randomArticle = cfg['random'] ?? true;
+            _selectedArticleIndex =
+                _randomArticle ? null : (cfg['selected_article_index'] as int?);
           });
+          // 配置获取成功后，再按配置拉取文章列表（文章可能已随配置更新）
+          await _fetchArticles();
         }
       }
     } catch (e) {
@@ -169,6 +186,7 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
 
   /// 从教师端HTTP API获取打字文章
   Future<void> _fetchArticles() async {
+    if (!mounted) return;
     setState(() {
       _isLoadingArticles = true;
       _loadError = null;
@@ -182,27 +200,38 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
         final data = json.decode(response.body) as Map<String, dynamic>;
         if (data['success'] == true && data['data'] != null) {
           final List<dynamic> articles = data['data'] as List<dynamic>;
+          final texts = articles
+              .whereType<Map>()
+              .map((a) => a['content'])
+              .whereType<String>()
+              .where((text) => text.isNotEmpty)
+              .toList();
+          if (!mounted) return;
           setState(() {
-            _practiceTexts =
-                articles.map((a) => a['content'] as String).toList();
+            _practiceTexts = texts;
             _isLoadingArticles = false;
           });
           if (_practiceTexts.isNotEmpty) {
             _generateNewText();
+          } else {
+            _loadError = '当前没有可用文章';
           }
         } else {
+          if (!mounted) return;
           setState(() {
             _isLoadingArticles = false;
             _loadError = '获取文章失败: ${data['error'] ?? '未知错误'}';
           });
         }
       } else {
+        if (!mounted) return;
         setState(() {
           _isLoadingArticles = false;
           _loadError = '获取文章失败，状态码: ${response.statusCode}';
         });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _isLoadingArticles = false;
         _loadError = '无法连接教师端，请检查网络连接。\n错误: $e';
@@ -243,8 +272,7 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
             return KeyEventResult.handled;
           }
         }
-        if (event is KeyDownEvent &&
-            event.logicalKey == LogicalKeyboardKey.backspace) {
+        if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.backspace) {
           final controller = _lineControllers[lineIdx];
           if (controller.selection.baseOffset == 0 && lineIdx > 0) {
             setState(() {
@@ -269,8 +297,14 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
 
   void _generateNewText() {
     if (_practiceTexts.isEmpty) return;
-    final random = Random();
-    _currentText = _practiceTexts[random.nextInt(_practiceTexts.length)];
+    if (!_randomArticle && _selectedArticleIndex != null && _selectedArticleIndex! >= 0 && _selectedArticleIndex! < _practiceTexts.length) {
+      // 教师端指定了特定文章
+      _currentText = _practiceTexts[_selectedArticleIndex!];
+    } else {
+      // 随机选择一篇文章
+      final random = Random();
+      _currentText = _practiceTexts[random.nextInt(_practiceTexts.length)];
+    }
   }
 
   /// 根据窗口宽度动态计算字体大小
@@ -292,8 +326,7 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
     final availableWidth = width - 36;
     if (availableWidth <= 0) return;
 
-    final style = TextStyle(
-        fontSize: _fontSize, height: 1.6, fontFamily: config.fontFamily);
+    final style = TextStyle(fontSize: _fontSize, height: 1.6, fontFamily: config.fontFamily);
     final tp = TextPainter(
       text: TextSpan(text: config.type == 'english' ? 'W' : '字', style: style),
       textDirection: TextDirection.ltr,
@@ -316,18 +349,15 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
 
     _lines = [];
     for (int i = 0; i < _currentText.length; i += charsPerLine) {
-      final end = (i + charsPerLine < _currentText.length)
-          ? i + charsPerLine
-          : _currentText.length;
+      final end = (i + charsPerLine < _currentText.length) ? i + charsPerLine : _currentText.length;
       _lines.add(_currentText.substring(i, end));
     }
 
     for (int i = 0; i < _lines.length; i++) {
       if (i < oldLineInputs.length) {
         final input = oldLineInputs[i];
-        _lineInputs.add(input.length <= _lines[i].length
-            ? input
-            : input.substring(0, _lines[i].length));
+        _lineInputs
+            .add(input.length <= _lines[i].length ? input : input.substring(0, _lines[i].length));
       } else {
         _lineInputs.add('');
       }
@@ -335,8 +365,7 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
       _lineFocusNodes.add(_createLineFocusNode(i));
     }
 
-    _activeLine =
-        oldActiveLine < _lines.length ? oldActiveLine : _lines.length - 1;
+    _activeLine = oldActiveLine < _lines.length ? oldActiveLine : _lines.length - 1;
     if (_activeLine < 0) _activeLine = 0;
 
     _totalTyped = 0;
@@ -490,95 +519,102 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
   }
 
   Future<void> _finishTyping() async {
+    if (_isFinishing || _isFinished) return;
+    _isFinishing = true;
     _timer?.cancel();
     try {
-      SocketService.instance.updateStatus('online');
-    } catch (e) {
-      print('恢复Socket状态失败: $e');
+      try {
+        SocketService.instance.updateStatus('online');
+      } catch (e) {
+        print('恢复Socket状态失败: $e');
+      }
+      int errorCount = _totalTyped - _correctChars;
+      final minutes = _elapsedSeconds > 0 ? _elapsedSeconds / 60.0 : 1.0;
+      final speed = _correctChars / minutes;
+      if (!mounted) return;
+      setState(() {
+        _isFinished = true;
+        double baseScore = (speed / _targetSpeed * _totalScore).clamp(0, _totalScore).toDouble();
+        _score = (baseScore - errorCount * _pointsPerError).clamp(0, _totalScore).toDouble();
+      });
+
+      final accuracy = _totalTyped > 0 ? (_correctChars / _totalTyped * 100).round() : 0;
+      final speedRounded =
+          _elapsedSeconds > 0 ? (_correctChars / (_elapsedSeconds / 60.0)).round() : 0;
+      final userProvider = context.read<UserProvider>();
+      userProvider.addTypingResult({
+        'type': config.type,
+        'wpm': speedRounded,
+        'accuracy': accuracy,
+        'score': _score.round(),
+        'elapsed': _elapsedSeconds,
+        'correctChars': _correctChars,
+        'totalTyped': _totalTyped,
+        'date': DateTime.now().toString().substring(0, 19),
+      });
+
+      final auth = context.read<AuthProvider>();
+      final currentUser = auth.currentUser;
+      // 生成唯一幂等ID，防止重复提交
+      final submissionId = currentUser != null
+          ? '${currentUser.id}_typing_${config.type}_${DateTime.now().millisecondsSinceEpoch}'
+          : 'typing_${config.type}_${DateTime.now().millisecondsSinceEpoch}';
+
+      await _saveTypingScoreToServer(_score.round(), speedRounded, accuracy, submissionId);
+
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.check_circle, color: Colors.green, size: 28),
+              SizedBox(width: 8),
+              Text('练习完成'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('成绩: ${_score.round()}/$_totalScore 分',
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Text('已打字符数: $_totalTyped', style: const TextStyle(fontSize: 16)),
+              const SizedBox(height: 4),
+              Text('错误字符数: $errorCount',
+                  style:
+                      TextStyle(fontSize: 16, color: errorCount > 0 ? Colors.red : Colors.green)),
+              const SizedBox(height: 4),
+              Text('准确率: $accuracy%', style: const TextStyle(fontSize: 16)),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                _resetPractice();
+              },
+              child: const Text('再来一次'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                Navigator.pop(context);
+              },
+              child: const Text('返回'),
+            ),
+          ],
+        ),
+      );
+    } finally {
+      _isFinishing = false;
     }
-    int errorCount = _totalTyped - _correctChars;
-    final minutes = _elapsedSeconds > 0 ? _elapsedSeconds / 60.0 : 1.0;
-    final speed = _correctChars / minutes;
-    setState(() {
-      _isFinished = true;
-      double baseScore =
-          (speed / _targetSpeed * _totalScore).clamp(0, _totalScore).toDouble();
-      _score = (baseScore - errorCount * _pointsPerError)
-          .clamp(0, _totalScore)
-          .toDouble();
-    });
-
-    final accuracy =
-        _totalTyped > 0 ? (_correctChars / _totalTyped * 100).round() : 0;
-    final speedRounded = _elapsedSeconds > 0
-        ? (_correctChars / (_elapsedSeconds / 60.0)).round()
-        : 0;
-    final userProvider = context.read<UserProvider>();
-    userProvider.addTypingResult({
-      'type': config.type,
-      'wpm': speedRounded,
-      'accuracy': accuracy,
-      'score': _score.round(),
-      'elapsed': _elapsedSeconds,
-      'correctChars': _correctChars,
-      'totalTyped': _totalTyped,
-      'date': DateTime.now().toString().substring(0, 19),
-    });
-
-    await _saveTypingScoreToServer(_score.round(), speedRounded, accuracy);
-
-    if (!mounted) return;
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.check_circle, color: Colors.green, size: 28),
-            SizedBox(width: 8),
-            Text('练习完成'),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('成绩: ${_score.round()}/$_totalScore 分',
-                style:
-                    const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            Text('已打字符数: $_totalTyped', style: const TextStyle(fontSize: 16)),
-            const SizedBox(height: 4),
-            Text('错误字符数: $errorCount',
-                style: TextStyle(
-                    fontSize: 16,
-                    color: errorCount > 0 ? Colors.red : Colors.green)),
-            const SizedBox(height: 4),
-            Text('准确率: $accuracy%', style: const TextStyle(fontSize: 16)),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.of(ctx).pop();
-              _resetPractice();
-            },
-            child: const Text('再来一次'),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.of(ctx).pop();
-              Navigator.pop(context);
-            },
-            child: const Text('返回'),
-          ),
-        ],
-      ),
-    );
   }
 
   Future<void> _saveTypingScoreToServer(
-      int score, int speed, int accuracy) async {
+      int score, int speed, int accuracy, String submissionId) async {
     try {
       final auth = context.read<AuthProvider>();
       final userProvider = context.read<UserProvider>();
@@ -592,6 +628,7 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
             Uri.parse('${ApiService.baseUrl}/score/typing'),
             headers: {'Content-Type': 'application/json'},
             body: json.encode({
+              'submission_id': submissionId,
               'student_id': user.id,
               'student_name': user.name,
               'type': config.type,
@@ -616,10 +653,63 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
           if (totalPoints != null) {
             userProvider.setPointsDirectly(totalPoints);
           }
+          return;
         }
       }
+      final saved = await _savePendingSubmission(score, speed, accuracy, submissionId);
+      if (!saved) {
+        print('警告: 成绩保存失败且无法写入待同步队列，请重新提交');
+      }
+    } on TimeoutException {
+      print('保存成绩超时: $submissionId');
+      await _savePendingSubmission(score, speed, accuracy, submissionId);
     } catch (e) {
       print('保存成绩失败: $e');
+      // 保存到本地待同步队列
+      await _savePendingSubmission(score, speed, accuracy, submissionId);
+    }
+  }
+
+  Future<bool> _savePendingSubmission(
+      int score, int speed, int accuracy, String submissionId) async {
+    final auth = context.read<AuthProvider>();
+    final currentUser = auth.currentUser;
+    if (currentUser == null) return false;
+    try {
+      final storage = LocalStorageService.instance;
+      // 整个读改写过程在单文件锁内执行，避免并发写入导致记录丢失
+      return storage.withFileLock('pending_typing_submissions.json', () async {
+        final pending = await storage.readJson('pending_typing_submissions.json');
+        final submissions = (pending['submissions'] as List<dynamic>?) ?? [];
+        final pendingPayload = {
+          'submission_id': submissionId,
+          'student_id': currentUser.id,
+          'student_name': currentUser.name,
+          'class_id': currentUser.classId ?? '',
+          'type': config.type,
+          'score': score,
+          'points': (score * 0.1).round(),
+          'speed': speed,
+          'accuracy': accuracy,
+          'elapsed_seconds': _elapsedSeconds,
+          'correct_chars': _correctChars,
+          'total_chars': _totalTyped,
+          'error_count': _totalTyped - _correctChars,
+          'created_at': DateTime.now().toIso8601String(),
+          'retry_count': 0,
+        };
+        submissions.add(pendingPayload);
+        final saved = await storage.writeJson('pending_typing_submissions.json', {
+          'submissions': submissions,
+        });
+        if (!saved) {
+          print('警告: 待同步记录写入失败，成绩可能丢失');
+        }
+        return saved;
+      });
+    } catch (e) {
+      print('保存待同步记录失败: $e');
+      return false;
     }
   }
 
@@ -702,13 +792,10 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
                 const SizedBox(width: 8),
                 Text(config.title,
                     style: const TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w800,
-                        color: AppTheme.textPrimary)),
+                        fontSize: 20, fontWeight: FontWeight.w800, color: AppTheme.textPrimary)),
                 const Spacer(),
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   decoration: BoxDecoration(
                     color: _remainingSeconds <= 60 && _isStarted
                         ? Colors.red.withAlpha(26)
@@ -725,45 +812,36 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
                 ),
                 const SizedBox(width: 8),
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
                     color: const Color(0xFFF8FAFC),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text('已打字数: $_totalTyped',
                       style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
-                          color: AppTheme.textPrimary)),
+                          fontSize: 14, fontWeight: FontWeight.bold, color: AppTheme.textPrimary)),
                 ),
                 const SizedBox(width: 8),
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
                     color: const Color(0xFFF8FAFC),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text('正确: $_correctChars',
                       style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.green)),
+                          fontSize: 14, fontWeight: FontWeight.bold, color: Colors.green)),
                 ),
                 const SizedBox(width: 8),
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
                     color: const Color(0xFFF8FAFC),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text('错误: ${_totalTyped - _correctChars}',
                       style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.red)),
+                          fontSize: 14, fontWeight: FontWeight.bold, color: Colors.red)),
                 ),
                 const SizedBox(width: 8),
                 if (!_isStarted && !_isLoadingArticles && _loadError == null)
@@ -774,10 +852,8 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppTheme.primaryColor,
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 8),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8)),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     ),
                   )
                 else if (_isFinished)
@@ -788,10 +864,8 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.green,
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 8),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8)),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     ),
                   )
                 else if (_isPaused)
@@ -802,10 +876,8 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.green,
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 8),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8)),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     ),
                   )
                 else if (_isStarted)
@@ -816,10 +888,8 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.orange,
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 8),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8)),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     ),
                   ),
               ],
@@ -835,8 +905,7 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
                   children: [
                     CircularProgressIndicator(),
                     SizedBox(height: 16),
-                    Text('正在从教师端加载文章...',
-                        style: TextStyle(fontSize: 16, color: Colors.grey)),
+                    Text('正在从教师端加载文章...', style: TextStyle(fontSize: 16, color: Colors.grey)),
                   ],
                 ),
               ),
@@ -847,13 +916,11 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.error_outline,
-                        size: 48, color: Colors.red),
+                    const Icon(Icons.error_outline, size: 48, color: Colors.red),
                     const SizedBox(height: 16),
                     Text(_loadError!,
                         textAlign: TextAlign.center,
-                        style:
-                            const TextStyle(fontSize: 16, color: Colors.red)),
+                        style: const TextStyle(fontSize: 16, color: Colors.red)),
                     const SizedBox(height: 16),
                     ElevatedButton.icon(
                       onPressed: _fetchArticles,
@@ -894,17 +961,12 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
                               // 原文行（实时变色）
                               Container(
                                 width: double.infinity,
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 8, vertical: 4),
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                                 decoration: BoxDecoration(
-                                  color: isActive
-                                      ? Colors.blue.withAlpha(13)
-                                      : null,
+                                  color: isActive ? Colors.blue.withAlpha(13) : null,
                                 ),
                                 child: Builder(builder: (context) {
-                                  final input = isDone || isActive
-                                      ? _lineInputs[lineIdx]
-                                      : '';
+                                  final input = isDone || isActive ? _lineInputs[lineIdx] : '';
                                   List<InlineSpan> spans = [];
                                   for (int i = 0; i < line.length; i++) {
                                     Color textColor;
@@ -930,20 +992,17 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
                                             height: 1.6,
                                             fontFamily: config.fontFamily)));
                                   }
-                                  return RichText(
-                                      text: TextSpan(children: spans));
+                                  return RichText(text: TextSpan(children: spans));
                                 }),
                               ),
                               // 每行下方都有输入框/结果
                               Container(
                                 width: double.infinity,
                                 margin: const EdgeInsets.symmetric(vertical: 4),
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 8, vertical: 6),
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                                 decoration: BoxDecoration(
-                                  color: isActive
-                                      ? const Color(0xFFEEF5FF)
-                                      : const Color(0xFFF8FAFC),
+                                  color:
+                                      isActive ? const Color(0xFFEEF5FF) : const Color(0xFFF8FAFC),
                                   border: Border.all(
                                       color: isActive
                                           ? AppTheme.primaryColor.withAlpha(128)
@@ -969,22 +1028,18 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
                                               ? 'Type the text above here...'
                                               : '请在此输入上方文字...')
                                           : '',
-                                      hintStyle:
-                                          TextStyle(color: Colors.grey[400]),
+                                      hintStyle: TextStyle(color: Colors.grey[400]),
                                       border: OutlineInputBorder(
                                         borderRadius: BorderRadius.circular(0),
-                                        borderSide: BorderSide(
-                                            color: const Color(0xFFD6DBE8)),
+                                        borderSide: BorderSide(color: const Color(0xFFD6DBE8)),
                                       ),
                                       enabledBorder: OutlineInputBorder(
                                         borderRadius: BorderRadius.circular(0),
-                                        borderSide: BorderSide(
-                                            color: const Color(0xFFD6DBE8)),
+                                        borderSide: BorderSide(color: const Color(0xFFD6DBE8)),
                                       ),
                                       focusedBorder: OutlineInputBorder(
                                         borderRadius: BorderRadius.circular(0),
-                                        borderSide: BorderSide(
-                                            color: const Color(0xFFD6DBE8)),
+                                        borderSide: BorderSide(color: const Color(0xFFD6DBE8)),
                                       ),
                                       isCollapsed: true,
                                       contentPadding: EdgeInsets.zero,
@@ -996,8 +1051,7 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
                                         });
                                       }
                                     },
-                                    onChanged: (value) =>
-                                        _onLineChanged(lineIdx, value),
+                                    onChanged: (value) => _onLineChanged(lineIdx, value),
                                   ),
                                 ),
                               ),

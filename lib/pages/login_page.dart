@@ -67,8 +67,8 @@ class _LoginPageState extends State<LoginPage> {
 
   Future<void> _handleLogin() async {
     if (_formKey.currentState!.validate()) {
-      final apiService = context.read<ApiService>();
       final authProvider = context.read<AuthProvider>();
+      final apiService = ApiService();
 
       final teacherActive = await apiService.checkTeacherActive();
 

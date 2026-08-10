@@ -22,29 +22,34 @@ class _PointsExchangePageState extends State<PointsExchangePage> {
   }
 
   Future<void> _loadExchangeItems() async {
+    if (!mounted) return;
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
     try {
       final response = await _apiService.getPointsExchangeItems();
+      if (!mounted) return;
       if (response['success'] == true) {
         final data = response['data'] as Map<String, dynamic>;
         final items = (data['items'] as List<dynamic>? ?? [])
             .where((item) => (item as Map<String, dynamic>)['enabled'] == true)
             .map((item) => Map<String, dynamic>.from(item as Map))
             .toList();
+        if (!mounted) return;
         setState(() {
           _items = items;
           _isLoading = false;
         });
       } else {
+        if (!mounted) return;
         setState(() {
           _errorMessage = response['error'] ?? '加载失败';
           _isLoading = false;
         });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _errorMessage = '网络错误: $e';
         _isLoading = false;

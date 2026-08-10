@@ -34,7 +34,9 @@ class QuestionModel {
       options: json['options']?.toString(),
       correctAnswer:
           json['correct_answer']?.toString() ?? json['answer']?.toString(),
-      score: json['score'] as int?,
+      score: json['score'] is num
+          ? (json['score'] as num).toInt()
+          : int.tryParse(json['score']?.toString() ?? ''),
       difficulty: json['difficulty']?.toString(),
       chapter: json['chapter']?.toString(),
       analysis: json['analysis']?.toString(),

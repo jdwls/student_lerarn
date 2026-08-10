@@ -10,12 +10,33 @@ import 'quiz_service.dart';
 /// 用于将题库保存到用户文档目录并加密
 class LocalStorageService {
   static LocalStorageService? _instance;
-  static LocalStorageService get instance =>
-      _instance ??= LocalStorageService._();
+  static LocalStorageService get instance => _instance ??= LocalStorageService._();
 
   LocalStorageService._();
 
   static const String _folderName = 'studentExam';
+
+  /// 按文件名串行化读改写操作，避免并发读写同一文件导致数据丢失。
+  /// key 通常是文件名；同一文件同时只有一个异步操作执行。
+  final Map<String, Future<void>> _fileLocks = {};
+
+  /// 在指定文件的锁内执行 action，串行化对该文件的访问。
+  Future<T> withFileLock<T>(String key, Future<T> Function() action) async {
+    final previous = _fileLocks[key];
+    final current = Completer<void>();
+    _fileLocks[key] = current.future;
+    if (previous != null) {
+      await previous.catchError((_) {});
+    }
+    try {
+      return await action();
+    } finally {
+      if (!current.isCompleted) current.complete();
+      if (identical(_fileLocks[key], current.future)) {
+        _fileLocks.remove(key);
+      }
+    }
+  }
 
   /// 获取题库本地存储根目录
   Future<String> get _basePath async {
@@ -44,19 +65,62 @@ class LocalStorageService {
     return bankPath;
   }
 
+  /// 安全写入JSON文件（使用临时文件 + flush + 原子替换）
+  Future<bool> _writeJsonSafely(
+    String filePath,
+    Map<String, dynamic> data, {
+    bool isEncoded = false,
+  }) async {
+    try {
+      final file = File(filePath);
+      final tempFile = File('${file.path}.tmp');
+
+      // 1. 写入临时文件
+      String content;
+      if (isEncoded) {
+        // Base64 编码内容
+        final jsonString = json.encode(data);
+        content = base64Encode(utf8.encode(jsonString)).toString();
+      } else {
+        content = json.encode(data);
+      }
+
+      await tempFile.writeAsString(content, flush: true);
+
+      // 2. 验证 JSON 格式（重新读取并解析）
+      final readBack = await tempFile.readAsString();
+      if (isEncoded) {
+        json.decode(utf8.decode(base64Decode(readBack)));
+      } else {
+        json.decode(readBack);
+      }
+
+      // 3. 原子替换
+      if (await file.exists()) {
+        await file.delete();
+      }
+      await tempFile.rename(filePath);
+
+      return true;
+    } catch (e) {
+      print('安全写入JSON失败: $e');
+      // 清理临时文件
+      try {
+        final tempFile = File('$filePath.tmp');
+        if (await tempFile.exists()) {
+          await tempFile.delete();
+        }
+      } catch (_) {}
+      return false;
+    }
+  }
+
   /// 保存题库（Base64加密）
-  Future<bool> saveQuestionBank(
-      String bankName, Map<String, dynamic> data) async {
+  Future<bool> saveQuestionBank(String bankName, Map<String, dynamic> data) async {
     try {
       final bankPath = await getBankPath(bankName);
       final file = File(p.join(bankPath, '题库.json'));
-
-      // 将JSON转换为字符串并Base64编码
-      final jsonString = json.encode(data);
-      final encoded = base64Encode(utf8.encode(jsonString));
-
-      await file.writeAsString(encoded);
-      return true;
+      return await _writeJsonSafely(file.path, data, isEncoded: true);
     } catch (e) {
       print('保存题库失败: $e');
       return false;
@@ -103,8 +167,7 @@ class LocalStorageService {
   }
 
   /// 保存图片到本地
-  Future<String?> saveImage(
-      String bankName, String imageName, List<int> bytes) async {
+  Future<String?> saveImage(String bankName, String imageName, List<int> bytes) async {
     try {
       final imagePath = await getImagePath(bankName);
       final file = File(p.join(imagePath, imageName));
@@ -118,25 +181,21 @@ class LocalStorageService {
   }
 
   /// 下载并保存远程图片
-  Future<String?> downloadAndSaveImage(
-      String bankName, String remoteUrl, String fileName) async {
+  Future<String?> downloadAndSaveImage(String bankName, String remoteUrl, String fileName) async {
     if (remoteUrl.isEmpty) return null;
 
     try {
       String fullUrl = remoteUrl;
 
       // 确保是有效的URL
-      if (!remoteUrl.startsWith('http://') &&
-          !remoteUrl.startsWith('https://')) {
+      if (!remoteUrl.startsWith('http://') && !remoteUrl.startsWith('https://')) {
         // 相对路径，拼接服务器地址
         // 例如: "5/图片/题干_1_20260429_132256.jpg" -> "http://localhost:20020/files/5/图片/题干_1_20260429_132256.jpg"
         fullUrl = '${QuizService.serverBaseUrl}/files/$remoteUrl';
       }
 
       print('下载图片: $fullUrl');
-      final response = await http
-          .get(Uri.parse(fullUrl))
-          .timeout(const Duration(seconds: 10));
+      final response = await http.get(Uri.parse(fullUrl)).timeout(const Duration(seconds: 10));
       if (response.statusCode == 200) {
         return await saveImage(bankName, fileName, response.bodyBytes);
       } else {
@@ -158,8 +217,7 @@ class LocalStorageService {
   }
 
   /// 获取本地图片文件路径
-  Future<String?> getLocalImageFilePath(
-      String bankName, String imageName) async {
+  Future<String?> getLocalImageFilePath(String bankName, String imageName) async {
     final imagePath = await getImagePath(bankName);
     final file = File(p.join(imagePath, imageName));
     if (file.existsSync()) {
@@ -219,33 +277,37 @@ class LocalStorageService {
 
   // ============ 通用JSON读写方法 ============
 
-  /// 读取JSON文件
+  /// 读取JSON文件（串行化，避免并发读写冲突）
   Future<Map<String, dynamic>> readJson(String filename) async {
-    try {
-      final base = await _basePath;
-      final file = File(p.join(base, filename));
+    return withFileLock('read_$filename', () async {
+      try {
+        final base = await _basePath;
+        final file = File(p.join(base, filename));
 
-      if (!file.existsSync()) {
+        if (!file.existsSync()) {
+          return {};
+        }
+
+        final content = await file.readAsString();
+        return json.decode(content) as Map<String, dynamic>;
+      } catch (e) {
         return {};
       }
-
-      final content = await file.readAsString();
-      return json.decode(content) as Map<String, dynamic>;
-    } catch (e) {
-      return {};
-    }
+    });
   }
 
-  /// 写入JSON文件
-  Future<void> writeJson(String filename, Map<String, dynamic> data) async {
-    try {
-      final base = await _basePath;
-      final file = File(p.join(base, filename));
-
-      await file.writeAsString(json.encode(data));
-    } catch (e) {
-      print('写入JSON失败: $e');
-    }
+  /// 写入JSON文件（安全写入 + 串行化，返回bool表示成功/失败）
+  Future<bool> writeJson(String filename, Map<String, dynamic> data) async {
+    return withFileLock('write_$filename', () async {
+      try {
+        final base = await _basePath;
+        final file = File(p.join(base, filename));
+        return await _writeJsonSafely(file.path, data, isEncoded: false);
+      } catch (e) {
+        print('写入JSON失败: $e');
+        return false;
+      }
+    });
   }
 
   /// 删除文件

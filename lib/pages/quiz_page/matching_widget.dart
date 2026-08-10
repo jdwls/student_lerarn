@@ -162,15 +162,16 @@ mixin _MatchingWidgetMixin on State<QuizPage> {
   Widget _buildMatchingQuestion(Map<String, dynamic> question) {
     final items = question['items'] as List<dynamic>? ?? [];
     final rawMap = _quizState._answers[_quizState._currentQuestionIndex];
-    final Map<int, int> connections = rawMap is Map<int, int>
-        ? Map<int, int>.from(rawMap)
-        : rawMap is Map
-            ? Map<int, int>.from(rawMap.map(
-                (k, v) => MapEntry(int.tryParse(k.toString()) ?? 0,
-                    int.tryParse(v.toString()) ?? 0),
-              ))
-            : <int, int>{};
-    final int? selectedLeft = _quizState._matchingSelectedLeft[_quizState._currentQuestionIndex];
+    final Map<int, int> connections = rawMap is Map
+        ? Map<int, int>.from(rawMap['mapping'] is Map
+            ? (rawMap['index_mapping'] is Map
+                ? rawMap['index_mapping']
+                : rawMap['mapping'])
+            : rawMap.map((k, v) => MapEntry(int.tryParse(k.toString()) ?? 0,
+                int.tryParse(v.toString()) ?? 0)))
+        : <int, int>{};
+    final int? selectedLeft =
+        _quizState._matchingSelectedLeft[_quizState._currentQuestionIndex];
     final int totalPairs = items.length;
     final int connectedCount = connections.length;
 
@@ -182,10 +183,14 @@ mixin _MatchingWidgetMixin on State<QuizPage> {
       _rightItemKeys.add(GlobalKey());
     }
 
-    // 渲染后量化位??
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _measureMatchingPositions();
-    });
+    // 渲染后测量位置（仅首次布局后执行一次，避免重复注册回调）
+    if (!_quizState._matchingMeasured) {
+      _quizState._matchingMeasured = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_quizState.mounted) return;
+        _measureMatchingPositions();
+      });
+    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -202,8 +207,8 @@ mixin _MatchingWidgetMixin on State<QuizPage> {
           ),
           child: Text(
             question['questionText'] ?? '',
-            style: const TextStyle(
-                fontSize: 31.2,
+            style: TextStyle(
+                fontSize: 31.2 * _quizState._contentScale,
                 fontWeight: FontWeight.bold,
                 color: Colors.black,
                 fontFamily: 'SimHei'),
@@ -361,14 +366,15 @@ mixin _MatchingWidgetMixin on State<QuizPage> {
                             _quizState.setState(() {
                               if (isLeftConnected) {
                                 connections.remove(index);
-                                _quizState._answers[_quizState._currentQuestionIndex] =
+                                _quizState._answers[
+                                        _quizState._currentQuestionIndex] =
                                     Map<int, int>.from(connections);
                               } else if (isLeftSelected) {
-                                _quizState._matchingSelectedLeft[_quizState._currentQuestionIndex] =
-                                    null;
+                                _quizState._matchingSelectedLeft[
+                                    _quizState._currentQuestionIndex] = null;
                               } else {
-                                _quizState._matchingSelectedLeft[_quizState._currentQuestionIndex] =
-                                    index;
+                                _quizState._matchingSelectedLeft[
+                                    _quizState._currentQuestionIndex] = index;
                               }
                             });
                           },
@@ -451,7 +457,7 @@ mixin _MatchingWidgetMixin on State<QuizPage> {
                                       Text(
                                         items[index]['leftText'] ?? '',
                                         style: TextStyle(
-                                          fontSize: 26,
+                                          fontSize: 26 * _quizState._contentScale,
                                           color: Colors.black,
                                           fontWeight: FontWeight.bold,
                                           fontFamily: 'SimHei',
@@ -459,7 +465,8 @@ mixin _MatchingWidgetMixin on State<QuizPage> {
                                       ),
                                       if (hasLeftImage) ...[
                                         const SizedBox(height: 4),
-                                        _quizState._buildImage(items[index]['leftImage']
+                                        _quizState._buildImage(items[index]
+                                                ['leftImage']
                                             .toString()),
                                       ],
                                     ],
@@ -479,7 +486,8 @@ mixin _MatchingWidgetMixin on State<QuizPage> {
                       // 左右间距 - 根据屏幕宽度动态计算
                       LayoutBuilder(
                         builder: (context, constraints) {
-                          final gapWidth = (constraints.maxWidth * 0.12).clamp(40.0, 160.0);
+                          final gapWidth =
+                              (constraints.maxWidth * 0.12).clamp(40.0, 160.0);
                           return SizedBox(width: gapWidth);
                         },
                       ),
@@ -498,17 +506,19 @@ mixin _MatchingWidgetMixin on State<QuizPage> {
                               if (leftKey != null) {
                                 _quizState.setState(() {
                                   connections.remove(leftKey);
-                                  _quizState._answers[_quizState._currentQuestionIndex] =
+                                  _quizState._answers[
+                                          _quizState._currentQuestionIndex] =
                                       Map<int, int>.from(connections);
                                 });
                               }
                             } else if (selectedLeft != null) {
                               _quizState.setState(() {
                                 connections[selectedLeft] = index;
-                                _quizState._answers[_quizState._currentQuestionIndex] =
+                                _quizState._answers[
+                                        _quizState._currentQuestionIndex] =
                                     Map<int, int>.from(connections);
-                                _quizState._matchingSelectedLeft[_quizState._currentQuestionIndex] =
-                                    null;
+                                _quizState._matchingSelectedLeft[
+                                    _quizState._currentQuestionIndex] = null;
                               });
                             }
                           },
@@ -565,7 +575,7 @@ mixin _MatchingWidgetMixin on State<QuizPage> {
                                       Text(
                                         items[index]['rightText'] ?? '',
                                         style: TextStyle(
-                                          fontSize: 26,
+                                          fontSize: 26 * _quizState._contentScale,
                                           color: Colors.black,
                                           fontWeight: FontWeight.bold,
                                           fontFamily: 'SimHei',
@@ -573,7 +583,8 @@ mixin _MatchingWidgetMixin on State<QuizPage> {
                                       ),
                                       if (hasRightImage) ...[
                                         const SizedBox(height: 4),
-                                        _quizState._buildImage(items[index]['rightImage']
+                                        _quizState._buildImage(items[index]
+                                                ['rightImage']
                                             .toString()),
                                       ],
                                     ],

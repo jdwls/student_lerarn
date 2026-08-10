@@ -29,8 +29,12 @@ class ExamModel {
       examDate: json['exam_date'] != null
           ? DateTime.tryParse(json['exam_date'].toString())
           : null,
-      duration: json['duration'] as int?,
-      totalScore: json['total_score'] as int?,
+      duration: json['duration'] is num
+          ? (json['duration'] as num).toInt()
+          : int.tryParse(json['duration']?.toString() ?? ''),
+      totalScore: json['total_score'] is num
+          ? (json['total_score'] as num).toInt()
+          : int.tryParse(json['total_score']?.toString() ?? ''),
       status: json['status']?.toString(),
       createdAt: json['created_at'] != null
           ? DateTime.tryParse(json['created_at'].toString())

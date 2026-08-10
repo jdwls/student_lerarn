@@ -115,7 +115,9 @@ class _WrongQuestionsPageState extends State<WrongQuestionsPage> {
       itemCount: widget.wrongQuestions.length,
       itemBuilder: (context, index) {
         final question = widget.wrongQuestions[index];
-        final questionIndex = question['index'] as int;
+        final questionIndex = question['index'] is int
+            ? question['index'] as int
+            : int.tryParse(question['index']?.toString() ?? '0') ?? 0;
         final userAnswer = widget.userAnswers[questionIndex];
         final questionType = question['type'] as String? ?? 'choice';
 
@@ -158,7 +160,7 @@ class _WrongQuestionsPageState extends State<WrongQuestionsPage> {
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Text(
-                      question['typeText'] ?? '选择题',
+                      question['typeText']?.toString() ?? '选择题',
                       style: TextStyle(
                         fontSize: 12,
                         color: _getTypeColor(questionType),
@@ -373,10 +375,13 @@ class _WrongQuestionsPageState extends State<WrongQuestionsPage> {
           // 左列
           Expanded(
             child: Column(
-              children: List.generate(items.length, (index) {
-                final leftText = items[index]['leftText'] as String? ?? '';
-                final isConnected = connections.containsKey(index);
-                final colorIndex = connections.keys.toList().indexOf(index);
+              children: List.generate(items.length, (idx) {
+                final item = items[idx] is Map
+                    ? items[idx] as Map
+                    : <String, dynamic>{};
+                final leftText = item['leftText']?.toString() ?? '';
+                final isConnected = connections.containsKey(idx);
+                final colorIndex = connections.keys.toList().indexOf(idx);
                 final color = isConnected
                     ? lineColors[colorIndex % lineColors.length]
                     : Colors.grey[300] ?? Colors.grey;
@@ -402,7 +407,7 @@ class _WrongQuestionsPageState extends State<WrongQuestionsPage> {
                         ),
                         child: Center(
                           child: Text(
-                            String.fromCharCode(65 + index),
+                            String.fromCharCode(65 + idx),
                             style: TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.bold,

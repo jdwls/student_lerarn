@@ -4,18 +4,24 @@ part of 'quiz_page.dart';
 mixin _OperationHandlerMixin on State<QuizPage> {
   _QuizPageState get _quizState => this as _QuizPageState;
 
-  /// Build operation question UI
-  Widget _buildOperationQuestion(Map<String, dynamic> question) {
-    final answer =
-        _quizState._answers[_quizState._currentQuestionIndex] as Map?;
-    final bool isCompleted = answer != null;
-    final initialFiles = question['initialFiles'] as List<dynamic>? ?? [];
-    final answers = question['answers'] as List<dynamic>? ?? [];
+  String? _safeContainedPath(String root, String relative) {
+    final normalizedRoot = path.normalize(root);
+    final candidate = path.normalize(path.join(normalizedRoot, relative));
+    final prefix = normalizedRoot.endsWith(Platform.pathSeparator)
+        ? normalizedRoot
+        : '$normalizedRoot${Platform.pathSeparator}';
+    if (candidate != normalizedRoot && !candidate.startsWith(prefix)) {
+      return null;
+    }
+    return candidate;
+  }
 
+
+  Widget _buildOperationQuestion(Map<String, dynamic> question) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Question description
+        // Question description with scale
         Container(
           width: double.infinity,
           padding: const EdgeInsets.all(16),
@@ -25,57 +31,11 @@ mixin _OperationHandlerMixin on State<QuizPage> {
           ),
           child: Text(
             question['questionText'] ?? '',
-            style: const TextStyle(
-                fontSize: 26,
+            style: TextStyle(
+                fontSize: 26 * _quizState._contentScale,
                 fontWeight: FontWeight.bold,
                 color: Colors.black,
                 fontFamily: 'SimHei'),
-          ),
-        ),
-        const SizedBox(height: 24),
-
-        // Completion status
-        if (isCompleted) ...[
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.green.withAlpha(26),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.green.withAlpha(77)),
-            ),
-            child: Row(
-              children: [
-                Icon(Icons.check_circle, color: Colors.green[700]),
-                const SizedBox(width: 8),
-                Text(
-                  '操作已完成，得分：${answer['score'] ?? 0} 分',
-                  style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.green[700]),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-        ],
-
-        // Start/restart button
-        Center(
-          child: ElevatedButton.icon(
-            onPressed: () => _startOperation(question, initialFiles, answers),
-            icon:
-                Icon(isCompleted ? Icons.refresh : Icons.play_arrow, size: 18),
-            label: Text(isCompleted ? '重新操作' : '开始操作'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor:
-                  isCompleted ? Colors.orange : AppTheme.primaryColor,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
-            ),
           ),
         ),
       ],
@@ -114,11 +74,11 @@ mixin _OperationHandlerMixin on State<QuizPage> {
     try {
       await _quizState._exitFullScreen();
       // Temporarily remove minimum size constraint
-      await windowManager.setMinimumSize(const Size(1, 1));
+      await windowManager.setMinimumSize(const Size(350, 400));
       // Set transparent background
       await windowManager.setBackgroundColor(Colors.transparent);
       // Set small window size and position (right 0%)
-      await windowManager.setSize(Size(420, 500));
+      await windowManager.setSize(const Size(420, 500));
       // Place on right side of screen
       await windowManager.setAlignment(Alignment.centerRight);
       // Set always on top
@@ -152,90 +112,152 @@ mixin _OperationHandlerMixin on State<QuizPage> {
       return const SizedBox.shrink();
 
     final question = _quizState._currentOperationQuestion!;
-    final initialFiles = _quizState._currentOperationInitialFiles ?? [];
-    final answers = _quizState._currentOperationAnswers ?? [];
 
     // Return directly without Scaffold (window fits content exactly)
     // Use no rounded corners to avoid gaps between window border and rounded corners
-    return Container(
-      width: 420,
-      height: 500,
-      decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border.all(color: const Color(0xFFD6DBE8)),
-      ),
-      child: Column(
-        children: [
-          // Title bar with drag handle (using original GestureDetector, not flickering)
-          GestureDetector(
-            onPanStart: (_) {
-              windowManager.startDragging();
-            },
-            child: Container(
-              height: 48,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: const BoxDecoration(
-                color: Color(0xFF2563EB),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return Container(
+          width: constraints.maxWidth,
+          height: constraints.maxHeight,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            border: Border.all(color: const Color(0xFFD6DBE8)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Title bar with drag handle
+              GestureDetector(
+                onPanStart: (_) {
+                  windowManager.startDragging();
+                },
+                child: Container(
+                  height: 48,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF2563EB),
+                  ),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: Row(
+                      children: [
+                        const Icon(Icons.computer, color: Colors.white, size: 24),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            '操作题 ${question['number'] ?? '1'}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              decoration: TextDecoration.none,
+                            ),
+                          ),
+                        ),
+                        const Spacer(),
+                        // Back button (far right)
+                        GestureDetector(
+                          onTap: _closeOperationOverlay,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withAlpha(51),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.arrow_back,
+                                    color: Colors.white, size: 18),
+                                SizedBox(width: 4),
+                                Text(
+                                  '返回答题',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               ),
-              child: Material(
-                color: Colors.transparent,
+              // Content area (scrollable question text)
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                  child: Text(
+                    question['questionText'] ?? '',
+                    style: const TextStyle(
+                      color: Colors.black,
+                      fontSize: 21,
+                      fontWeight: FontWeight.w500,
+                      height: 1.6,
+                      decoration: TextDecoration.none,
+                    ),
+                  ),
+                ),
+              ),
+              // Bottom buttons
+              Container(
+                decoration: const BoxDecoration(
+                  color: Color(0xFFF8F9FA),
+                  border: Border(
+                    top: BorderSide(color: Color(0xFFE0E0E0)),
+                  ),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 child: Row(
                   children: [
-                    const Icon(Icons.computer, color: Colors.white, size: 24),
-                    const SizedBox(width: 10),
+                    // Refetch button
                     Expanded(
-                      child: Text(
-                        '操作题 ${question['number'] ?? '1'}',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          decoration: TextDecoration.none,
+                      child: OutlinedButton.icon(
+                        onPressed: () => _refetchCurrentFileFromDocument(),
+                        icon: const Icon(Icons.refresh, size: 16),
+                        label: const Text('重新获取', style: TextStyle(fontSize: 13)),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.blue,
+                          side: const BorderSide(color: Colors.blue),
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
                         ),
                       ),
                     ),
-                    // Back button
-                    GestureDetector(
-                      onTap: _closeOperationOverlay,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withAlpha(51),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.arrow_back,
-                                color: Colors.white, size: 18),
-                            SizedBox(width: 4),
-                            Text(
-                              '返回答题',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 14,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
+                    const SizedBox(width: 12),
+                    // Complete button
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: _closeOperationOverlay,
+                        icon: const Icon(Icons.check, size: 16),
+                        label: const Text('完成并返回', style: TextStyle(fontSize: 13)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
                         ),
                       ),
                     ),
                   ],
                 ),
-              ), // Material
-            ), // Container
-          ), // GestureDetector
-          // Content area
-          Expanded(
-            child:
-                _buildOperationOverlayContent(question, initialFiles, answers),
+              ),
+            ],
           ),
-        ],
-      ),
-    );
-  }
+        );
+        },
+      );
+    }
 
   /// Close operation overlay
   void _closeOperationOverlay() async {
@@ -264,9 +286,15 @@ mixin _OperationHandlerMixin on State<QuizPage> {
     try {
       // Remove always-on-top
       await windowManager.setAlwaysOnTop(false);
-      // Restore background
-      await windowManager.setBackgroundColor(Colors.white);
-      // 恢复到进入小测前的状态（全屏）
+      // Restore background to transparent (same as main.dart init)
+      await windowManager.setBackgroundColor(Colors.transparent);
+      // Restore minimum size to normal (was set to 350x400 in _startOperation)
+      await windowManager.setMinimumSize(const Size(1280, 720));
+      // Restore alignment to default
+      await windowManager.setAlignment(Alignment.center);
+      // Restore hidden title bar style (student app uses TitleBarStyle.hidden)
+      await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
+      // 恢复到全屏
       await windowManager.setFullScreen(true);
       debugPrint('Window restored to fullscreen');
     } catch (e) {
@@ -285,71 +313,6 @@ mixin _OperationHandlerMixin on State<QuizPage> {
         'completed': true,
       };
     });
-  }
-
-  /// Build operation overlay content (replaces OperationQuestionPanel)
-  Widget _buildOperationOverlayContent(
-    Map<String, dynamic> question,
-    List<dynamic> initialFiles,
-    List<dynamic> answers,
-  ) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Question text
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.grey[100],
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Text(
-              question['questionText'] ?? '',
-              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-            ),
-          ),
-          const SizedBox(height: 16),
-          // Refetch button - re-obtain current question files from Documents
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: () => _refetchCurrentFileFromDocument(),
-              icon: const Icon(Icons.refresh, size: 18),
-              label: const Text('重新获取'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: Colors.blue,
-                side: const BorderSide(color: Colors.blue),
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          // Complete button
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: _closeOperationOverlay,
-              icon: const Icon(Icons.check, size: 18),
-              label: const Text('完成并返回'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.green,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
   }
 
   /// 从 Documents/题库/{题库名称}/操作题/ 重新获取当前题目的操作题文件
@@ -401,18 +364,33 @@ mixin _OperationHandlerMixin on State<QuizPage> {
         if (fileName.isEmpty && filePath.isEmpty) continue;
 
         // 规范化 filePath：去除 "题库/{bankName}/操作题/" 前缀
-        // 使用 _DataLoaderMixin 中的静态方法 _normalizeOperationFilePath
         final normalizedPath = _DataLoaderMixin._normalizeOperationFilePath(filePath);
-        final relativePath = normalizedPath.isNotEmpty ? normalizedPath : fileName;
+        final rawRelativePath = normalizedPath.isNotEmpty ? normalizedPath : fileName;
 
-        final sourceFile = File('$documentOperationPath\\$relativePath');
+        // 安全校验：只接受相对路径，并在源、目标根目录内解析。
+        final segments = rawRelativePath.replaceAll('\\', '/').split('/');
+        if (segments.any((s) => s.isEmpty || s == '.' || s == '..') ||
+            RegExp(r'^[A-Za-z]:').hasMatch(rawRelativePath) ||
+            rawRelativePath.startsWith('/') || rawRelativePath.startsWith('\\')) {
+          debugPrint('警告: 拒绝非法操作题路径: $rawRelativePath');
+          continue;
+        }
+        final relativePath = segments.join(Platform.pathSeparator);
+        final sourceRoot = await docDir.resolveSymbolicLinks();
+        final targetRoot = await Directory(driveLetter + Platform.pathSeparator)
+            .resolveSymbolicLinks();
+        final sourcePath = _safeContainedPath(sourceRoot, relativePath);
+        final targetPath = _safeContainedPath(targetRoot, relativePath);
+        if (sourcePath == null || targetPath == null) continue;
+
+        final sourceFile = File(sourcePath);
         if (!await sourceFile.exists()) {
           debugPrint('Source file not found: ${sourceFile.path}');
           continue;
         }
 
         // 目标路径：虚拟驱动器
-        final targetFile = File('$driveLetter\\$relativePath');
+        final targetFile = File('$driveLetter${Platform.pathSeparator}$relativePath');
         await targetFile.parent.create(recursive: true);
         await sourceFile.copy(targetFile.path);
         copiedCount++;
@@ -497,10 +475,23 @@ mixin _OperationHandlerMixin on State<QuizPage> {
               syncResult['operation_files'] as List<dynamic>? ?? [];
           if (operationFiles.isNotEmpty) {
             // Use _quizState cast to call _DataLoaderMixin method
-            (_quizState as dynamic)._saveOperationFilesToLocal(
+            final saveSuccess = await (_quizState as dynamic)._saveOperationFilesToLocal(
                 _quizState._selectedBank!, operationFiles);
-            debugPrint('Operation files resynced: ${operationFiles.length}');
-            localFilesExist = true;
+            if (saveSuccess) {
+              debugPrint('Operation files resynced: ${operationFiles.length}');
+              localFilesExist = true;
+            } else {
+              debugPrint('操作题文件保存失败，重新同步失败');
+              if (_quizState.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('操作题文件保存失败，请稍后重试'),
+                    backgroundColor: Colors.red,
+                    duration: Duration(seconds: 3),
+                  ),
+                );
+              }
+            }
           }
         }
       }

@@ -16,9 +16,10 @@ class SingleInstanceService {
       // 保持 socket 监听，防止端口被释放
       _serverSocket!.listen((_) {});
       return true;
-    } catch (e) {
-      // 端口已被占用，说明已有实例在运行
-      return false;
+    } on SocketException catch (e) {
+      // 只有明确的地址占用才表示已有学生端实例；其他错误不能误判为重复启动。
+      if (e.osError?.errorCode == 10048) return false;
+      rethrow;
     }
   }
 

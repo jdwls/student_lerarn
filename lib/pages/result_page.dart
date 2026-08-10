@@ -25,7 +25,13 @@ class ResultPage extends StatefulWidget {
     this.wrongQuestions = const [],
     this.userAnswers = const {},
     this.typeStats = const {},
-  });
+  }) : assert(score >= 0, 'score不能为负数'),
+       assert(totalScore > 0, 'totalScore必须大于0'),
+       assert(correctCount >= 0, 'correctCount不能为负数'),
+       assert(totalCount >= 0, 'totalCount不能为负数'),
+       assert(elapsedSeconds >= 0, 'elapsedSeconds不能为负数'),
+       assert(score <= totalScore, 'score不能超过totalScore'),
+       assert(correctCount <= totalCount, 'correctCount不能超过totalCount');
 
   @override
   State<ResultPage> createState() => _ResultPageState();
@@ -35,36 +41,27 @@ class _ResultPageState extends State<ResultPage> {
   @override
   void initState() {
     super.initState();
-    _enterFullScreen();
+    // 重置窗口参数（操作题浮动窗口可能修改了窗口状态）
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _resetWindowState();
+    });
   }
 
-  @override
-  void dispose() {
-    _exitFullScreen();
-    super.dispose();
-  }
-
-  /// 进入全屏模式
-  Future<void> _enterFullScreen() async {
+  /// 重置窗口状态（恢复到进入小测前的窗口大小，非全屏）
+  Future<void> _resetWindowState() async {
     try {
-      // 恢复窗口大小（清除小窗限制）
-      await windowManager.maximize();
+      await windowManager.setAlwaysOnTop(false);
+      await windowManager.setBackgroundColor(Colors.transparent);
+      await windowManager.setMinimumSize(const Size(1280, 720));
+      await windowManager.setAlignment(Alignment.center);
+      await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
+      // 退出全屏，恢复到进入小测前的窗口大小（1280x720）
+      await windowManager.setFullScreen(false);
+      await windowManager.setSize(const Size(1280, 720));
+      await windowManager.center();
+      debugPrint('ResultPage 窗口已恢复为正常大小');
     } catch (e) {
-      debugPrint('窗口最大化失败: $e');
-    }
-  }
-
-  /// 退出全屏模式
-  Future<void> _exitFullScreen() async {
-    try {
-      await windowManager.setFullScreen(false).timeout(
-        const Duration(seconds: 3),
-        onTimeout: () {
-          debugPrint('setFullScreen(false) 超时');
-        },
-      );
-    } catch (e) {
-      debugPrint('退出全屏失败: $e');
+      debugPrint('ResultPage 窗口状态重置失败: $e');
     }
   }
 
@@ -188,9 +185,12 @@ class _ResultPageState extends State<ResultPage> {
                         const SizedBox(height: 8),
                         ...widget.typeStats.entries.map((entry) {
                           final typeName = _getTypeName(entry.key);
-                          final correct = entry.value['correct'] as int? ?? 0;
-                          final wrong = entry.value['wrong'] as int? ?? 0;
-                          final score = entry.value['score'] as int? ?? 0;
+                          final value = entry.value;
+                          int safeInt(dynamic v, int fallback) =>
+                              v is num ? v.toInt() : int.tryParse(v?.toString() ?? '') ?? fallback;
+                          final correct = safeInt(value['correct'], 0);
+                          final wrong = safeInt(value['wrong'], 0);
+                          final score = safeInt(value['score'], 0);
                           return Container(
                             padding: const EdgeInsets.symmetric(
                                 vertical: 12, horizontal: 16),

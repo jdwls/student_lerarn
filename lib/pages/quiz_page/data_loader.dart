@@ -6,6 +6,7 @@ mixin _DataLoaderMixin on State<QuizPage> {
 
   /// Load list of available question banks
   Future<void> _loadQuestionBanks() async {
+    if (!_quizState.mounted) return;
     _quizState.setState(() {
       _quizState._isLoading = true;
       _quizState._errorMessage = null;
@@ -17,12 +18,14 @@ mixin _DataLoaderMixin on State<QuizPage> {
       if (activeBank != null && activeBank.isNotEmpty) {
         await _loadQuestionBank(activeBank);
       } else {
+        if (!_quizState.mounted) return;
         _quizState.setState(() {
           _quizState._isLoading = false;
           _quizState._errorMessage = '等待教师发布题目...';
         });
       }
     } catch (e) {
+      if (!_quizState.mounted) return;
       _quizState.setState(() {
         _quizState._isLoading = false;
         _quizState._errorMessage = '无法连接服务器：$e';
@@ -31,6 +34,9 @@ mixin _DataLoaderMixin on State<QuizPage> {
   }
 
   Future<void> _loadQuestionBank(String bankName) async {
+    if (!_quizState.mounted) return;
+    final generation = ++_quizState._loadGeneration;
+    bool current() => _quizState._isCurrentLoad(generation);
     _quizState.setState(() {
       _quizState._isLoading = true;
       _quizState._errorMessage = null;
@@ -38,11 +44,14 @@ mixin _DataLoaderMixin on State<QuizPage> {
 
     try {
       await VhdService.cleanupAllSubstDrives();
+      if (!current()) return;
 
       debugPrint('Starting sync bank: $bankName');
       final syncResult = await QuizService.syncBankFiles(bankName);
+      if (!current()) return;
 
       if (syncResult == null) {
+        if (!_quizState.mounted) return;
         _quizState.setState(() {
           _quizState._isLoading = false;
           _quizState._errorMessage = '无法同步题库文件';
@@ -50,8 +59,11 @@ mixin _DataLoaderMixin on State<QuizPage> {
         return;
       }
 
-      final bankContent = syncResult['bank_content'] as String?;
-      if (bankContent == null) {
+      final bankContent = syncResult['bank_content'];
+      if (bankContent == null ||
+          (bankContent is String && bankContent.isEmpty)) {
+        if (!_quizState.mounted) return;
+        if (!_quizState.mounted) return;
         _quizState.setState(() {
           _quizState._isLoading = false;
           _quizState._errorMessage = '题库内容为空';
@@ -59,37 +71,61 @@ mixin _DataLoaderMixin on State<QuizPage> {
         return;
       }
 
-      final data = json.decode(bankContent) as Map<String, dynamic>;
+      final Map<String, dynamic> data;
+      if (bankContent is Map) {
+        data = Map<String, dynamic>.from(bankContent);
+      } else if (bankContent is String) {
+        data = json.decode(bankContent) as Map<String, dynamic>;
+      } else {
+        if (!_quizState.mounted) return;
+        if (!_quizState.mounted) return;
+        _quizState.setState(() {
+          _quizState._isLoading = false;
+          _quizState._errorMessage = '题库数据格式错误';
+        });
+        return;
+      }
       await LocalStorageService.instance.saveQuestionBank(bankName, data);
+      if (!current()) return;
       debugPrint('Bank saved to local: $bankName');
 
-      final operationFiles = syncResult['operation_files'] as List<dynamic>? ?? [];
+      final operationFiles =
+          syncResult['operation_files'] as List<dynamic>? ?? [];
       if (operationFiles.isNotEmpty) {
         await _saveOperationFilesToLocal(bankName, operationFiles);
+        if (!current()) return;
         debugPrint('Operation files saved: ${operationFiles.length}');
       }
 
       await _downloadAndCacheImages(bankName, data);
+      if (!current()) return;
 
       final choiceQuestions = (data['choiceQuestions'] as List?)
               ?.map((q) => _parseChoiceQuestion(q as Map<String, dynamic>))
-              .toList() ?? [];
+              .toList() ??
+          [];
       final matchingQuestions = (data['matchingQuestions'] as List?)
               ?.map((q) => _parseMatchingQuestion(q as Map<String, dynamic>))
-              .toList() ?? [];
+              .toList() ??
+          [];
       final sequentialQuestions = (data['sequentialQuestions'] as List?)
               ?.map((q) => _parseSequentialQuestion(q as Map<String, dynamic>))
-              .toList() ?? [];
+              .toList() ??
+          [];
       final typingQuestions = (data['typingQuestions'] as List?)
               ?.map((q) => _parseTypingQuestion(q as Map<String, dynamic>))
-              .toList() ?? [];
+              .toList() ??
+          [];
       final operationQuestions = (data['operationQuestions'] as List?)
               ?.map((q) => _parseOperationQuestion(q as Map<String, dynamic>))
-              .toList() ?? [];
+              .toList() ??
+          [];
 
       if (operationQuestions.isNotEmpty) {
         await VhdService.cleanupAllSubstDrives();
+        if (!current()) return;
         await _createVirtualDriveFromLocal(bankName);
+        if (!current()) return;
       }
 
       choiceQuestions.shuffle();
@@ -98,6 +134,7 @@ mixin _DataLoaderMixin on State<QuizPage> {
       typingQuestions.shuffle();
       operationQuestions.shuffle();
 
+      if (!_quizState.mounted) return;
       _quizState.setState(() {
         _quizState._selectedBank = bankName;
         _quizState._choiceQuestions = choiceQuestions;
@@ -115,6 +152,12 @@ mixin _DataLoaderMixin on State<QuizPage> {
         _quizState._selectedQuestionType = 'all';
         _quizState._currentQuestionIndex = 0;
         _quizState._answers.clear();
+        // 清理旧打字题状态，避免 TextEditingController 泄漏
+        for (final ts in _quizState._typingStates.values) {
+          ts.dispose();
+        }
+        _quizState._typingStates.clear();
+        _quizState._matchingMeasured = false;
         _quizState._elapsedSeconds = 0;
         _quizState._isLoading = false;
       });
@@ -122,8 +165,11 @@ mixin _DataLoaderMixin on State<QuizPage> {
       _quizState._startTimer();
 
       final examTimeLimit = await QuizService.getExamTimeLimit();
+      if (!current()) return;
       final earlySubmitMinutes = await QuizService.getEarlySubmitMinutes();
+      if (!current()) return;
       if (examTimeLimit > 0) {
+        if (!_quizState.mounted) return;
         _quizState.setState(() {
           _quizState._examTimeLimit = examTimeLimit;
           _quizState._examRemainingSeconds = examTimeLimit * 60;
@@ -132,9 +178,10 @@ mixin _DataLoaderMixin on State<QuizPage> {
         _startExamTimer();
       }
 
-      // 3秒后复制操作题到 Documents/题库/{题库名称}/操作题/
-      _copyOperationToDocumentsAfterDelay(bankName);
+      if (!current()) return;
+      _copyOperationToDocumentsAfterDelay(bankName, generation);
     } catch (e) {
+      if (!_quizState.mounted) return;
       _quizState.setState(() {
         _quizState._isLoading = false;
         _quizState._errorMessage = '加载题库失败：$e';
@@ -154,7 +201,9 @@ mixin _DataLoaderMixin on State<QuizPage> {
       questionText = q['题干'] ?? q['questionText'] ?? '';
       questionImage = q['题干图片'] ?? q['questionImage'] ?? '';
       answer = item['答案'] ?? item['answer'] ?? '';
-      score = int.tryParse(item['分值']?.toString() ?? item['score']?.toString() ?? '5') ?? 5;
+      score = int.tryParse(
+              item['分值']?.toString() ?? item['score']?.toString() ?? '5') ??
+          5;
 
       final optionLabels = ['A', 'B', 'C', 'D'];
       final options = <Map<String, dynamic>>[];
@@ -195,7 +244,9 @@ mixin _DataLoaderMixin on State<QuizPage> {
       questionText = q['题干'] ?? q['questionText'] ?? '';
       questionImage = q['题干图片'] ?? q['questionImage'] ?? '';
       answer = q['答案'] ?? q['answer'] ?? '';
-      score = int.tryParse(q['分值']?.toString() ?? q['score']?.toString() ?? '5') ?? 5;
+      score =
+          int.tryParse(q['分值']?.toString() ?? q['score']?.toString() ?? '5') ??
+              5;
       optA = q['选项A'] ?? q['optionA'] ?? '';
       optB = q['选项B'] ?? q['optionB'] ?? '';
       optC = q['选项C'] ?? q['optionC'] ?? '';
@@ -226,7 +277,17 @@ mixin _DataLoaderMixin on State<QuizPage> {
 
   Map<String, dynamic> _parseMatchingQuestion(Map<String, dynamic> q) {
     final rawItems = (q['items'] as List<dynamic>?) ?? [];
-
+    final questionScore = q['score'] is num
+        ? (q['score'] as num).toInt()
+        : int.tryParse(q['score']?.toString() ?? '') ??
+            rawItems.fold<int>(
+                0,
+                (sum, item) =>
+                    sum +
+                    (int.tryParse(item['分值']?.toString() ??
+                            item['score']?.toString() ??
+                            '5') ??
+                        5));
     final leftItems = <Map<String, dynamic>>[];
     final rightItems = <Map<String, dynamic>>[];
     for (int i = 0; i < rawItems.length; i++) {
@@ -240,21 +301,27 @@ mixin _DataLoaderMixin on State<QuizPage> {
         'text': item['右侧内容'] ?? item['rightContent'] ?? item['rightText'] ?? '',
         'image': item['右侧图片'] ?? item['rightImage'],
         'originalIndex': i,
-        'score': int.tryParse(item['分值']?.toString() ?? item['score']?.toString() ?? '5') ?? 5,
+        'score': int.tryParse(
+                item['分值']?.toString() ?? item['score']?.toString() ?? '5') ??
+            5,
       });
     }
 
     leftItems.shuffle();
     rightItems.shuffle();
 
-    final correctMapping = <int, int>{};
-    for (int li = 0; li < leftItems.length; li++) {
-      final leftOrig = leftItems[li]['originalIndex'] as int;
-      for (int ri = 0; ri < rightItems.length; ri++) {
-        if (rightItems[ri]['originalIndex'] == leftOrig) {
-          correctMapping[li] = ri;
+    final correctMapping = <String, String>{};
+    for (final leftItem in leftItems) {
+      Map<String, dynamic>? rightItem;
+      for (final candidate in rightItems) {
+        if (candidate['originalIndex'] == leftItem['originalIndex']) {
+          rightItem = candidate;
           break;
         }
+      }
+      if (rightItem != null) {
+        correctMapping[leftItem['originalIndex'].toString()] =
+            rightItem['originalIndex'].toString();
       }
     }
 
@@ -265,6 +332,8 @@ mixin _DataLoaderMixin on State<QuizPage> {
         'rightText': rightItems[i]['text'],
         'leftImage': leftItems[i]['image'],
         'rightImage': rightItems[i]['image'],
+        'leftId': leftItems[i]['originalIndex'].toString(),
+        'rightId': rightItems[i]['originalIndex'].toString(),
         'score': rightItems[i]['score'],
       });
     }
@@ -274,40 +343,43 @@ mixin _DataLoaderMixin on State<QuizPage> {
       'number': q['题号']?.toString() ?? q['number'] ?? '1',
       'questionText': q['题干'] ?? q['questionText'] ?? '',
       'questionImage': q['题干图片'] ?? q['questionImage'],
+      'score': questionScore,
       'items': items,
       'correctMapping': correctMapping,
     };
   }
 
   Map<String, dynamic> _parseSequentialQuestion(Map<String, dynamic> q) {
-    final items = (q['items'] as List<dynamic>?)
-        ?.map((item) => {
-              'text': item['待排序项目'] ?? item['orderText'] ?? item['orderOption'] ?? '',
-              'image': item['项图片'] ?? item['optionImage'] ?? item['image'],
-              'score': int.tryParse(item['分值']?.toString() ?? item['score']?.toString() ?? '5') ?? 5,
-            })
-        .toList();
+    final rawItems = (q['items'] as List<dynamic>?) ?? [];
+    final questionScore = q['score'] is num
+        ? (q['score'] as num).toInt()
+        : int.tryParse(q['score']?.toString() ?? '') ??
+            rawItems.fold<int>(
+                0,
+                (sum, item) =>
+                    sum +
+                    (int.tryParse(item['分值']?.toString() ??
+                            item['score']?.toString() ??
+                            '5') ??
+                        5));
+    final items = <Map<String, dynamic>>[];
+    final correctOrder = <String>[];
+    for (int index = 0; index < rawItems.length; index++) {
+      final item = rawItems[index];
+      final id = item['序号']?.toString() ?? '$index';
+      correctOrder.add(id);
+      items.add({
+        'id': id,
+        'text': item['待排序项目'] ?? item['orderText'] ?? item['orderOption'] ?? '',
+        'image': item['项图片'] ?? item['optionImage'] ?? item['image'],
+        'score': int.tryParse(
+                item['分值']?.toString() ?? item['score']?.toString() ?? '5') ??
+            5,
+      });
+    }
 
-    if (items != null && items.length > 1) {
-      final correctOrder = (q['items'] as List<dynamic>?)
-          ?.asMap()
-          .entries
-          .map((e) => e.value['待排序项目'] ?? e.value['orderText'] ?? e.value['orderOption'] ?? '')
-          .toList();
-
-      bool isCorrect = true;
-      int maxAttempts = 100;
-      while (isCorrect && maxAttempts > 0) {
-        maxAttempts--;
-        items.shuffle();
-        isCorrect = true;
-        for (int i = 0; i < items.length; i++) {
-          if (items[i]['text'] != correctOrder?[i]) {
-            isCorrect = false;
-            break;
-          }
-        }
-      }
+    if (items.length > 1) {
+      items.shuffle();
     }
 
     return {
@@ -315,24 +387,25 @@ mixin _DataLoaderMixin on State<QuizPage> {
       'number': q['题号']?.toString() ?? q['number'] ?? '1',
       'questionText': q['题干'] ?? q['questionText'] ?? '',
       'questionImage': q['题干图片'] ?? q['questionImage'],
-      'items': items ?? [],
-      'answer': (q['items'] as List<dynamic>?)
-          ?.asMap()
-          .entries
-          .map((e) => e.value['待排序项目'] ?? e.value['orderText'] ?? e.value['orderOption'] ?? '')
-          .toList(),
+      'score': questionScore,
+      'items': items,
+      // 答案保存为题库中的稳定 ID 顺序，不受展示随机排序影响。
+      'answer': correctOrder,
     };
   }
 
   Map<String, dynamic> _parseTypingQuestion(Map<String, dynamic> q) {
+    int safeInt(dynamic value, int fallback) => value is num
+        ? value.toInt()
+        : int.tryParse(value?.toString() ?? '') ?? fallback;
     return {
       'type': 'typing',
       'number': q['题号']?.toString() ?? q['number'] ?? '1',
       'questionText': q['题干'] ?? q['questionText'] ?? q['参考文本'] ?? '',
       'typingType': q['打字类型'] ?? q['typingType'] ?? 'chinese',
       'referenceText': q['参考文本'] ?? q['referenceText'] ?? '',
-      'timeLimit': q['时间限制'] ?? q['timeLimit'] ?? 5,
-      'score': q['分值'] ?? q['score'] ?? 10,
+      'timeLimit': safeInt(q['时间限制'] ?? q['timeLimit'], 5),
+      'score': safeInt(q['分值'] ?? q['score'], 10),
     };
   }
 
@@ -360,7 +433,8 @@ mixin _DataLoaderMixin on State<QuizPage> {
                   'filePath': f['文件路径'] ?? f['filePath'] ?? '',
                   'checkLines': f['检查行'] as List<dynamic>? ?? [],
                 })
-            .toList() ?? [];
+            .toList() ??
+        [];
 
     final answers = <Map<String, dynamic>>[];
     for (final file in initialFileRaw) {
@@ -375,7 +449,9 @@ mixin _DataLoaderMixin on State<QuizPage> {
           'lineNumber': clMap['行号'] is int
               ? clMap['行号']
               : (int.tryParse(clMap['行号']?.toString() ?? '0') ?? 0),
-          'expectedContent': clMap['内容'] ?? '',
+          'expectedContent': clMap['期望内容']?.toString().isNotEmpty == true
+              ? clMap['期望内容'].toString()
+              : clMap['内容']?.toString() ?? '',
           'score': clMap['分值'] is int
               ? clMap['分值']
               : (int.tryParse(clMap['分值']?.toString() ?? '5') ?? 5),
@@ -399,54 +475,140 @@ mixin _DataLoaderMixin on State<QuizPage> {
     };
   }
 
-  Future<void> _saveOperationFilesToLocal(String bankName, List<dynamic> operationFiles) async {
+  /// 保存操作题文件到本地（事务模式：临时目录 → 原子替换）
+  /// 返回 true 表示成功，false 表示失败
+  Future<bool> _saveOperationFilesToLocal(
+      String bankName, List<dynamic> operationFiles) async {
+    if (operationFiles.isEmpty) {
+      debugPrint('操作题文件列表为空');
+      return true;
+    }
+
     try {
+      // 1. 确定正式目录和临时目录
       final operationFolderPath =
           '${AppPath.informationDir}${Platform.pathSeparator}$bankName${Platform.pathSeparator}操作题';
+      final tempFolderPath = '$operationFolderPath.tmp';
       final operationFolder = Directory(operationFolderPath);
-      if (!await operationFolder.exists()) {
-        await operationFolder.create(recursive: true);
+      final tempFolder = Directory(tempFolderPath);
+
+      // 2. 清理临时目录（如果存在）
+      if (await tempFolder.exists()) {
+        await tempFolder.delete(recursive: true);
       }
 
+      // 3. 创建临时目录
+      await tempFolder.create(recursive: true);
+
+      int successCount = 0;
+      int failureCount = 0;
+      int totalBytes = 0;
+
+      // 4. 所有文件写入到临时目录
       for (final file in operationFiles) {
-        final fileMap = file as Map<String, dynamic>;
-        final fileName = fileMap['fileName'] as String? ?? fileMap['path'] as String? ?? '';
+        final fileMap = file is Map<String, dynamic>
+            ? file
+            : Map<String, dynamic>.from(file as Map);
+        final rawPath =
+            (fileMap['fileName'] ?? fileMap['path'])?.toString() ?? '';
         final content = fileMap['content'] as String?;
         final filePath = fileMap['filePath'] as String?;
 
-        if (fileName.isEmpty) continue;
-
-        final targetPath = '$operationFolderPath${Platform.pathSeparator}$fileName';
-        final targetFile = File(targetPath);
-        final targetDir = targetFile.parent;
-        if (!await targetDir.exists()) {
-          await targetDir.create(recursive: true);
+        if (rawPath.isEmpty) {
+          failureCount++;
+          continue;
         }
 
-        if (content != null && content.isNotEmpty) {
-          try {
-            final decoded = base64Decode(content);
-            await targetFile.writeAsBytes(decoded);
-          } catch (_) {
-            await targetFile.writeAsString(content);
+        // 路径验证
+        final segments = rawPath.replaceAll('\\', '/').split('/');
+        if (segments.any((s) => s.isEmpty || s == '.' || s == '..') ||
+            rawPath.startsWith('/') ||
+            RegExp(r'^[A-Za-z]:').hasMatch(rawPath)) {
+          debugPrint('警告: 拒绝非法操作题路径: $rawPath');
+          failureCount++;
+          continue;
+        }
+
+        try {
+          final safePath = segments.join(Platform.pathSeparator);
+          final rootPath = await tempFolder.resolveSymbolicLinks();
+          final targetPath = path.normalize(path.join(rootPath, safePath));
+          final prefix = rootPath.endsWith(Platform.pathSeparator)
+              ? rootPath
+              : '$rootPath${Platform.pathSeparator}';
+
+          // 防止目录穿越
+          if (!targetPath.startsWith(prefix)) {
+            debugPrint('警告: 目录穿越尝试: $rawPath');
+            failureCount++;
+            continue;
           }
-        } else if (filePath != null && filePath.isNotEmpty) {
-          final sourceFile = File(filePath);
-          if (await sourceFile.exists()) {
-            await sourceFile.copy(targetPath);
+
+          final targetFile = File(targetPath);
+          final targetDir = targetFile.parent;
+          if (!await targetDir.exists()) {
+            await targetDir.create(recursive: true);
+          }
+
+          // 写入文件
+          if (content != null && content.isNotEmpty) {
+            try {
+              final decoded = base64Decode(content);
+              await targetFile.writeAsBytes(decoded);
+              totalBytes += decoded.length;
+            } catch (_) {
+              await targetFile.writeAsString(content);
+              totalBytes += content.length;
+            }
+          } else if (filePath != null && filePath.isNotEmpty) {
+            final sourceFile = File(filePath);
+            if (await sourceFile.exists()) {
+              await sourceFile.copy(targetPath);
+              final stat = await sourceFile.stat();
+              totalBytes += stat.size;
+            } else {
+              await targetFile.writeAsString('');
+            }
           } else {
             await targetFile.writeAsString('');
           }
-        } else {
-          await targetFile.writeAsString('');
+
+          successCount++;
+        } catch (e) {
+          debugPrint('写入操作题文件失败: $rawPath, 错误: $e');
+          failureCount++;
         }
       }
+
+      // 5. 检查是否有失败
+      if (failureCount > 0) {
+        debugPrint('操作题文件保存部分失败: 成功=$successCount, 失败=$failureCount, 总字节=$totalBytes');
+        // 保留临时目录用于调试，但返回失败
+        return false;
+      }
+
+      debugPrint('操作题文件临时写入成功: 文件数=$successCount, 总字节=$totalBytes');
+
+      // 6. 原子替换：删除旧目录，rename临时目录
+      try {
+        if (await operationFolder.exists()) {
+          await operationFolder.delete(recursive: true);
+        }
+        await tempFolder.rename(operationFolderPath);
+        debugPrint('操作题目录已更新: $operationFolderPath');
+        return true;
+      } catch (e) {
+        debugPrint('操作题目录替换失败: $e, 临时目录保留在 $tempFolderPath');
+        return false;
+      }
     } catch (e) {
-      debugPrint('Save operation file failed: $e');
+      debugPrint('操作题文件保存异常: $e');
+      return false;
     }
   }
 
-  Future<void> _downloadAndCacheImages(String bankName, Map<String, dynamic> data) async {
+  Future<void> _downloadAndCacheImages(
+      String bankName, Map<String, dynamic> data) async {
     try {
       final imageUrls = <String>[];
       final choiceQuestions = data['choiceQuestions'] as List<dynamic>? ?? [];
@@ -469,36 +631,31 @@ mixin _DataLoaderMixin on State<QuizPage> {
       }
 
       if (imageUrls.isNotEmpty) {
-        final imageCacheDir = Directory(
-            '${AppPath.informationDir}${Platform.pathSeparator}image_cache');
-        if (!await imageCacheDir.exists()) {
-          await imageCacheDir.create(recursive: true);
-        }
-
         for (final url in imageUrls) {
           try {
-            if (url.startsWith('C:') || url.startsWith('D:') || url.startsWith('/')) {
+            // 跳过本地绝对路径
+            if (url.startsWith('C:') ||
+                url.startsWith('D:') ||
+                url.startsWith('/')) {
               continue;
             }
-            final uri = Uri.parse(url);
-            final fileName = uri.pathSegments.last;
-            if (fileName.isEmpty) continue;
-
-            final targetPath = '${imageCacheDir.path}${Platform.pathSeparator}$fileName';
-            final targetFile = File(targetPath);
-            if (await targetFile.exists()) continue;
-
-            final httpClient = HttpClient();
-            final request = await httpClient.getUrl(uri);
-            final response = await request.close();
-            if (response.statusCode == 200) {
-              final bytes = <int>[];
-              await for (final chunk in response) {
-                bytes.addAll(chunk);
-              }
-              await targetFile.writeAsBytes(bytes);
+            // 已经是 HTTP URL，直接下载
+            if (url.startsWith('http://') || url.startsWith('https://')) {
+              final uri = Uri.parse(url);
+              final fileName = uri.pathSegments.last;
+              if (fileName.isEmpty) continue;
+              await LocalStorageService.instance
+                  .downloadAndSaveImage(bankName, url, fileName);
+              continue;
             }
-            httpClient.close();
+            // 相对路径（如 "题库名称/图片/文件名.jpg"），拼接教师端文件服务URL
+            final fullUrl =
+                '${QuizService.serverBaseUrl}/files/$url';
+            // 从路径中提取文件名
+            final fileName = url.split('/').last;
+            if (fileName.isEmpty) continue;
+            await LocalStorageService.instance
+                .downloadAndSaveImage(bankName, fullUrl, fileName);
           } catch (e) {
             debugPrint('Download image failed $url: $e');
           }
@@ -533,6 +690,7 @@ mixin _DataLoaderMixin on State<QuizPage> {
     _quizState._examTimer?.cancel();
     _quizState._examTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!_quizState.mounted) return;
+      if (!_quizState.mounted) return;
       _quizState.setState(() {
         _quizState._examRemainingSeconds--;
       });
@@ -549,7 +707,8 @@ mixin _DataLoaderMixin on State<QuizPage> {
     if (_quizState._showingOperationOverlay) {
       int operationScore = 0;
       try {
-        if (_quizState._currentOperationAnswers != null && VhdService.isMounted) {
+        if (_quizState._currentOperationAnswers != null &&
+            VhdService.isMounted) {
           final checkResult = await VhdService.checkAnswersWithDetails(
             _quizState._currentOperationAnswers!.cast<Map<String, dynamic>>(),
           );
@@ -559,6 +718,7 @@ mixin _DataLoaderMixin on State<QuizPage> {
         debugPrint('[自动提交] 批改异常: $e');
       }
       _quizState._stopWindowCheck();
+      if (!_quizState.mounted) return;
       _quizState.setState(() {
         _quizState._showingOperationOverlay = false;
         _quizState._currentOperationQuestion = null;
@@ -612,14 +772,16 @@ mixin _DataLoaderMixin on State<QuizPage> {
         final targetFile = File('${target.path}${Platform.pathSeparator}$name');
         await entity.copy(targetFile.path);
       } else if (entity is Directory) {
-        final targetSubDir = Directory('${target.path}${Platform.pathSeparator}$name');
+        final targetSubDir =
+            Directory('${target.path}${Platform.pathSeparator}$name');
         await targetSubDir.create(recursive: true);
         await _copyDirectory(entity, targetSubDir);
       }
     }
   }
 
-  Future<void> _copyOperationFilesToExam(String bankName, List<Map<String, dynamic>> operationQuestions) async {
+  Future<void> _copyOperationFilesToExam(
+      String bankName, List<Map<String, dynamic>> operationQuestions) async {
     try {
       final allFiles = <Map<String, dynamic>>[];
       for (final question in operationQuestions) {
@@ -645,7 +807,8 @@ mixin _DataLoaderMixin on State<QuizPage> {
 
   Future<void> _createVirtualDrive(String bankName) async {
     try {
-      final bankPath = '${AppPath.informationDir}${Platform.pathSeparator}$bankName${Platform.pathSeparator}操作题';
+      final bankPath =
+          '${AppPath.informationDir}${Platform.pathSeparator}$bankName${Platform.pathSeparator}操作题';
       await VhdService.cleanupAllSubstDrives();
       final driveLetter = await VhdService.mountPath(bankPath);
       if (driveLetter != null) {
@@ -659,9 +822,11 @@ mixin _DataLoaderMixin on State<QuizPage> {
   }
 
   /// 延迟3秒后，将操作题从 information 复制到 Documents/题库/{bankName}/操作题/
-  Future<void> _copyOperationToDocumentsAfterDelay(String bankName) async {
+  Future<void> _copyOperationToDocumentsAfterDelay(
+      String bankName, int generation) async {
     try {
       await Future.delayed(const Duration(seconds: 3));
+      if (!_quizState._isCurrentLoad(generation)) return;
       await _copyOperationToDocuments(bankName);
     } catch (e) {
       debugPrint('Copy operation to documents after delay failed: $e');
@@ -672,7 +837,8 @@ mixin _DataLoaderMixin on State<QuizPage> {
   Future<void> _copyOperationToDocuments(String bankName) async {
     try {
       // 源路径：information/{bankName}/操作题/
-      final sourcePath = '${AppPath.informationDir}${Platform.pathSeparator}$bankName${Platform.pathSeparator}操作题';
+      final sourcePath =
+          '${AppPath.informationDir}${Platform.pathSeparator}$bankName${Platform.pathSeparator}操作题';
       final sourceDir = Directory(sourcePath);
       if (!await sourceDir.exists()) {
         debugPrint('Source operation path not found: $sourcePath');
@@ -697,7 +863,8 @@ mixin _DataLoaderMixin on State<QuizPage> {
 
       // 递归复制所有文件
       await _copyDirectory(sourceDir, targetDir);
-      debugPrint('Operation files copied to Documents: $sourcePath -> $targetPath');
+      debugPrint(
+          'Operation files copied to Documents: $sourcePath -> $targetPath');
     } catch (e) {
       debugPrint('Copy operation to documents failed: $e');
     }
