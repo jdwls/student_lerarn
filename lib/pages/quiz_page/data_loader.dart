@@ -1,5 +1,10 @@
 part of 'quiz_page.dart';
 
+/// 在后台 isolate 中解析题库 JSON（供 compute 调用）
+/// 大题库（含内联 Base64 操作题）解码会阻塞主线程，导致进答题页"卡一下"
+Map<String, dynamic> _decodeBankJson(String content) =>
+    json.decode(content) as Map<String, dynamic>;
+
 /// Data loader mixin - handles question bank loading, parsing, and syncing
 mixin _DataLoaderMixin on State<QuizPage> {
   _QuizPageState get _quizState => this as _QuizPageState;
@@ -33,6 +38,14 @@ mixin _DataLoaderMixin on State<QuizPage> {
     }
   }
 
+  /// 更新加载步骤提示（给用户进度反馈，避免看起来"卡住"）
+  void _setLoadingStep(String step) {
+    if (!_quizState.mounted) return;
+    _quizState.setState(() {
+      _quizState._loadingStep = step;
+    });
+  }
+
   Future<void> _loadQuestionBank(String bankName) async {
     if (!_quizState.mounted) return;
     final generation = ++_quizState._loadGeneration;
@@ -43,9 +56,11 @@ mixin _DataLoaderMixin on State<QuizPage> {
     });
 
     try {
+      _setLoadingStep('正在清理虚拟驱动器…');
       await VhdService.cleanupAllSubstDrives();
       if (!current()) return;
 
+      _setLoadingStep('正在同步题库文件…');
       debugPrint('Starting sync bank: $bankName');
       final syncResult = await QuizService.syncBankFiles(bankName);
       if (!current()) return;
@@ -75,7 +90,9 @@ mixin _DataLoaderMixin on State<QuizPage> {
       if (bankContent is Map) {
         data = Map<String, dynamic>.from(bankContent);
       } else if (bankContent is String) {
-        data = json.decode(bankContent) as Map<String, dynamic>;
+        // 大题库 JSON 解码放到后台 isolate，避免阻塞 UI
+        // （入参是 String（廉价拷贝），返回 Map 由 Isolate.exit 零拷贝传回）
+        data = await compute(_decodeBankJson, bankContent);
       } else {
         if (!_quizState.mounted) return;
         if (!_quizState.mounted) return;
@@ -85,6 +102,7 @@ mixin _DataLoaderMixin on State<QuizPage> {
         });
         return;
       }
+      _setLoadingStep('正在保存题库到本地…');
       await LocalStorageService.instance.saveQuestionBank(bankName, data);
       if (!current()) return;
       debugPrint('Bank saved to local: $bankName');
@@ -92,13 +110,17 @@ mixin _DataLoaderMixin on State<QuizPage> {
       final operationFiles =
           syncResult['operation_files'] as List<dynamic>? ?? [];
       if (operationFiles.isNotEmpty) {
+        _setLoadingStep('正在解压操作题文件…');
         await _saveOperationFilesToLocal(bankName, operationFiles);
         if (!current()) return;
         debugPrint('Operation files saved: ${operationFiles.length}');
       }
 
+      _setLoadingStep('正在下载题目图片…');
       await _downloadAndCacheImages(bankName, data);
       if (!current()) return;
+
+      _setLoadingStep('正在解析题目…');
 
       final choiceQuestions = (data['choiceQuestions'] as List?)
               ?.map((q) => _parseChoiceQuestion(q as Map<String, dynamic>))
@@ -631,6 +653,13 @@ mixin _DataLoaderMixin on State<QuizPage> {
       }
 
       if (imageUrls.isNotEmpty) {
+        if (_quizState.mounted) {
+          _quizState.setState(() {
+            _quizState._isDownloadingImages = true;
+            _quizState._totalImages = imageUrls.length;
+            _quizState._downloadedImages = 0;
+          });
+        }
         for (final url in imageUrls) {
           try {
             // 跳过本地绝对路径
@@ -658,11 +687,22 @@ mixin _DataLoaderMixin on State<QuizPage> {
                 .downloadAndSaveImage(bankName, fullUrl, fileName);
           } catch (e) {
             debugPrint('Download image failed $url: $e');
+          } finally {
+            // 无论成功、失败还是跳过，都推进进度，保证进度条能走到 100%
+            if (_quizState.mounted) {
+              _quizState.setState(() => _quizState._downloadedImages++);
+            }
           }
         }
       }
     } catch (e) {
       debugPrint('Download cache image failed: $e');
+    } finally {
+      if (_quizState.mounted && _quizState._isDownloadingImages) {
+        _quizState.setState(() {
+          _quizState._isDownloadingImages = false;
+        });
+      }
     }
   }
 
@@ -737,11 +777,17 @@ mixin _DataLoaderMixin on State<QuizPage> {
     }
   }
 
-  void _restoreWindowAfterOperation() {
+  Future<void> _restoreWindowAfterOperation() async {
     try {
-      windowManager.setAlwaysOnTop(false);
-      windowManager.setBackgroundColor(Colors.white);
-      windowManager.setFullScreen(true);
+      await windowManager
+          .setAlwaysOnTop(false)
+          .timeout(const Duration(seconds: 3), onTimeout: () {});
+      await windowManager
+          .setBackgroundColor(Colors.white)
+          .timeout(const Duration(seconds: 3), onTimeout: () {});
+      await windowManager
+          .setFullScreen(true)
+          .timeout(const Duration(seconds: 3), onTimeout: () {});
     } catch (_) {}
   }
 

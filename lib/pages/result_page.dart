@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:window_manager/window_manager.dart';
+import '../services/window_mode_service.dart';
 import 'wrong_questions_page.dart';
 
 /// 答题结果页面
@@ -47,19 +47,12 @@ class _ResultPageState extends State<ResultPage> {
     });
   }
 
-  /// 重置窗口状态（恢复到进入小测前的窗口大小，非全屏）
+  /// 重置窗口状态（恢复到进入小测前的窗口状态）
+  /// 幂等：QuizPage dispose 已恢复过一次时不会重复处理
   Future<void> _resetWindowState() async {
     try {
-      await windowManager.setAlwaysOnTop(false);
-      await windowManager.setBackgroundColor(Colors.transparent);
-      await windowManager.setMinimumSize(const Size(1280, 720));
-      await windowManager.setAlignment(Alignment.center);
-      await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
-      // 退出全屏，恢复到进入小测前的窗口大小（1280x720）
-      await windowManager.setFullScreen(false);
-      await windowManager.setSize(const Size(1280, 720));
-      await windowManager.center();
-      debugPrint('ResultPage 窗口已恢复为正常大小');
+      await WindowModeService.exitQuizFullScreen();
+      debugPrint('ResultPage 窗口已恢复');
     } catch (e) {
       debugPrint('ResultPage 窗口状态重置失败: $e');
     }

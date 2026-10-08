@@ -14,6 +14,7 @@
 - [项目简介](#项目简介)
 - [技术栈](#技术栈)
 - [核心功能](#核心功能)
+- [在线更新与窗口管理](#在线更新与窗口管理)
 - [项目结构](#项目结构)
 - [环境要求](#环境要求)
 - [快速开始](#快速开始)
@@ -43,13 +44,14 @@
 |-----------|------|------|
 | **Flutter / Dart** | >=3.0.0 | 跨平台桌面应用框架 |
 | **Provider** | ^6.0.5 | 状态管理（AuthProvider, ExamProvider, UserProvider） |
-| **http** | ^1.1.0 | RESTful API 网络请求 |
+| **http** | ^1.1.0 | RESTful API 请求与在线更新包下载 |
 | **web_socket_channel** | （内置） | WebSocket 实时通信 |
 | **fl_chart** | ^0.66.0 | 数据可视化图表（成绩趋势、积分变化曲线） |
 | **shared_preferences** | ^2.2.2 | 本地键值对持久化（登录状态等） |
-| **path_provider** | ^2.1.1 | 文件系统路径访问 |
-| **window_manager** | ^0.3.7 | 窗口管理（自定义标题栏、全屏模式、窗口尺寸） |
+| **path_provider** | ^2.1.1 | 本地数据及更新文件路径管理 |
+| **window_manager** | ^0.3.7 | 窗口管理（自定义标题栏、答题全屏及窗口状态恢复） |
 | **desktop_multi_window** | ^0.2.0 | 多窗口支持（操作题指导窗口） |
+| **crypto** | ^3.0.3 | 在线更新安装包 MD5 校验 |
 | **flutter_svg** | ^2.0.9 | SVG 矢量图标渲染 |
 | **json_annotation / json_serializable** | 最新 | JSON 序列化/反序列化 |
 | **intl** | ^0.18.1 | 国际化与日期格式化 |
@@ -137,6 +139,16 @@
 - **本地存储** — 使用 `shared_preferences` 持久化本地数据
 - **API 服务** — 统一封装 HTTP 请求，支持 GET/POST 等操作
 
+### 9️⃣ 在线更新与窗口管理
+
+- **版本检查** — 启动时读取 `student_config.json` 中的版本号，并支持周期性检查更新。
+- **更新包下载** — 支持断点续传和下载进度管理；服务端提供 MD5 时会校验文件完整性。
+- **静默安装** — Windows 更新通过独立的 `mini_updater.exe` 应用 ZIP 整包，替换成功后更新本地版本号。
+- **答题窗口状态** — 进入答题时切换全屏，退出后恢复进入前的窗口尺寸、最大化或全屏状态。
+- **自定义标题栏** — 提供窗口操作与全屏切换交互。
+
+在线更新需要发布端提供版本信息和 ZIP 格式的完整 Windows 应用包；发布目录还需包含配套的 `mini_updater.exe`。普通 `flutter build windows` 只生成应用构建产物，不会单独生成升级器或发布用 ZIP 包。
+
 ---
 
 ## 📁 项目结构
@@ -182,7 +194,9 @@ student/
 │   │   ├── device_info_service.dart           # 设备信息采集
 │   │   ├── quiz_service.dart                  # 小测服务
 │   │   ├── vhd_service.dart                   # VHD 虚拟磁盘操作
-│   │   └── single_instance_service.dart       # 单实例运行检测
+│   │   ├── single_instance_service.dart       # 单实例运行检测
+│   │   ├── update_service.dart                # 在线更新、下载与校验
+│   │   └── window_mode_service.dart            # 答题窗口状态管理
 │   │
 │   ├── theme/
 │   │   └── app_theme.dart                     # 应用主题配置
@@ -206,7 +220,8 @@ student/
 │
 ├── pubspec.yaml                               # 项目配置与依赖声明
 ├── analysis_options.yaml                      # 静态分析配置
-└── student_config.json                        # 学生端配置文件
+├── student_config.json                        # 学生端服务器与版本配置
+└── test/                                       # 单元测试
 ```
 
 ---
@@ -240,14 +255,16 @@ flutter pub get
 
 ### 3. 配置后端服务
 
-编辑 `student_config.json` 文件，配置后端 API 地址与 WebSocket 地址：
+编辑 `student_config.json` 文件，配置教师端服务器 IP 和当前学生端版本号。当前配置文件使用以下字段：
 
 ```json
 {
-  "api_base_url": "http://your-server:port/api",
-  "socket_url": "ws://your-server:port/ws"
+  "server_ip": "127.0.0.1",
+  "version": "1.0.0"
 }
 ```
+
+请将 `server_ip` 改为实际教师端服务器地址。`version` 用于在线更新版本比较；更新成功后由升级流程维护。API 与 WebSocket 地址由应用服务根据服务器配置构造。
 
 ### 4. 运行应用
 
@@ -276,6 +293,16 @@ flutter build windows
 ### 打包分发
 
 建议使用 Inno Setup 或 NSIS 等工具将 Release 目录打包为安装程序，方便分发部署。
+
+### 在线更新包
+
+在线更新使用 ZIP 格式的完整 Windows 应用包，而不是只更新 `student.exe`。升级包应包含完整 Release 文件以及与应用配套的 `mini_updater.exe`；发布端还需提供版本信息、文件名、文件大小，并可选提供 MD5、强制更新标记和最低允许版本。具体的升级器构建及发布端接口由配套发布项目提供。
+
+### 运行测试
+
+```bash
+flutter test
+```
 
 ---
 

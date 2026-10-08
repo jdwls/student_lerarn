@@ -3,10 +3,11 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:provider/provider.dart';
-import 'package:window_manager/window_manager.dart';
 import '../providers/auth_provider.dart';
 import '../providers/user_provider.dart';
 import '../services/api_service.dart';
+import '../services/update_service.dart';
+import '../services/window_mode_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/custom_title_bar.dart';
 import 'chinese_typing_page.dart';
@@ -40,6 +41,14 @@ class _MainHomePageState extends State<MainHomePage> with RouteAware {
         final userProvider = context.read<UserProvider>();
         userProvider.setUser(auth.currentUser!);
         userProvider.loadUserData(auth.currentUser!.id);
+        // 登录成功后启动在线升级：注册回调（定时检查发现新版本时自动安装）+ 立即检查一次
+        UpdateService.instance.startPeriodicCheck(
+          auth.currentUser!.id,
+          onUpdateAvailable: (info) {
+            if (mounted) _installUpdate(info);
+          },
+        );
+        UpdateService.instance.checkNow();
       }
     });
     // 获取教师端活跃班级
@@ -60,8 +69,82 @@ class _MainHomePageState extends State<MainHomePage> with RouteAware {
   @override
   void dispose() {
     _activeClassTimer?.cancel();
+    UpdateService.instance.stopPeriodicCheck();
     MainHomePage.routeObserver.unsubscribe(this);
     super.dispose();
+  }
+
+  /// 下载并静默安装新版本（不弹确认，直接下载 + 进度条）
+  Future<void> _installUpdate(UpdateInfo updateInfo) async {
+    // 提前拿到 Navigator：即使页面被销毁也能关闭对话框（不再直接 exit(0)）
+    final navigator = Navigator.of(context, rootNavigator: true);
+
+    debugPrint('开始下载更新: ${updateInfo.version} - ${updateInfo.fileName}');
+
+    // 显示下载进度对话框（点遮罩不关闭，但提供"取消下载"）
+    final progressKey = GlobalKey<_UpdateProgressDialogState>();
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _UpdateProgressDialog(
+        key: progressKey,
+        updateInfo: updateInfo,
+        onCancel: UpdateService.instance.cancelDownload,
+      ),
+    );
+
+    // 执行下载
+    String? filePath;
+    try {
+      filePath = await UpdateService.instance.downloadUpdate(
+        updateInfo,
+        onProgress: (received, total) {
+          progressKey.currentState?.updateProgress(received, total);
+        },
+      );
+    } catch (e) {
+      debugPrint('下载更新异常: $e');
+    }
+
+    if (filePath == null) {
+      _closeUpdateDialog(navigator);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('更新下载失败或已取消，请稍后重试'),
+            backgroundColor: AppTheme.errorColor,
+          ),
+        );
+      }
+      return;
+    }
+
+    progressKey.currentState?.updateStatus('下载完成，正在静默安装...');
+    final launched = await UpdateService.instance.silentInstall(
+      filePath,
+      updateInfo.version,
+    );
+    _closeUpdateDialog(navigator);
+
+    if (launched) {
+      // 更新程序已启动静默安装，退出当前进程等待替换
+      debugPrint('更新程序已启动，退出当前进程以完成替换');
+      exit(0);
+    } else if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('更新程序启动失败，请重试'),
+          backgroundColor: AppTheme.errorColor,
+        ),
+      );
+    }
+  }
+
+  /// 安全关闭更新进度对话框（不依赖当前页面的 mounted 状态）
+  void _closeUpdateDialog(NavigatorState navigator) {
+    if (navigator.mounted) {
+      navigator.pop();
+    }
   }
 
   /// 当其他页面覆盖当前页面时，暂停轮询
@@ -86,19 +169,12 @@ class _MainHomePageState extends State<MainHomePage> with RouteAware {
     _restoreWindowToNormal();
   }
 
-  /// 从小测返回后恢复窗口为正常状态（非全屏，正常窗口大小）
+  /// 从小测返回后恢复窗口为进入小测前的状态
+  /// （幂等：不在答题模式时不做事；原来最大化的窗口会恢复为最大化）
   Future<void> _restoreWindowToNormal() async {
     try {
-      await windowManager.setAlwaysOnTop(false);
-      // 恢复为透明背景（与学生端 main.dart 初始化一致）
-      await windowManager.setBackgroundColor(Colors.transparent);
-      await windowManager.setMinimumSize(const Size(1280, 720));
-      await windowManager.setAlignment(Alignment.center);
-      await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
-      await windowManager.setFullScreen(false);
-      await windowManager.setSize(const Size(1280, 720));
-      await windowManager.center();
-      debugPrint('首页窗口已恢复为正常大小');
+      await WindowModeService.exitQuizFullScreen();
+      debugPrint('首页窗口已恢复');
     } catch (e) {
       debugPrint('恢复首页窗口失败: $e');
     }
@@ -1295,6 +1371,141 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 更新下载进度对话框
+class _UpdateProgressDialog extends StatefulWidget {
+  final UpdateInfo updateInfo;
+
+  /// 点击"取消下载"时回调（UpdateService 会在下一个数据块到达时中止）
+  final VoidCallback? onCancel;
+
+  const _UpdateProgressDialog({
+    Key? key,
+    required this.updateInfo,
+    this.onCancel,
+  }) : super(key: key);
+
+  @override
+  State<_UpdateProgressDialog> createState() => _UpdateProgressDialogState();
+}
+
+class _UpdateProgressDialogState extends State<_UpdateProgressDialog> {
+  int _received = 0;
+  int _total = 0;
+  String _statusText = '正在下载更新文件...';
+  bool _cancelRequested = false;
+
+  /// 更新下载进度
+  void updateProgress(int received, int total) {
+    if (!mounted) return;
+    setState(() {
+      _received = received;
+      _total = total;
+    });
+  }
+
+  /// 更新状态文本
+  void updateStatus(String text) {
+    if (!mounted) return;
+    setState(() {
+      _statusText = text;
+    });
+  }
+
+  String _formatSize(int bytes) {
+    if (bytes <= 0) return '0 B';
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final double progress = _total > 0
+        ? (_received / _total).clamp(0.0, 1.0)
+        : 0.0;
+    final int percent = (progress * 100).round();
+
+    return AlertDialog(
+      title: const Row(
+        children: [
+          Icon(Icons.system_update, color: AppTheme.primaryColor),
+          SizedBox(width: 8),
+          Text('正在更新学生端'),
+        ],
+      ),
+      content: SizedBox(
+        width: 360,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('新版本: ${widget.updateInfo.version}'),
+            const SizedBox(height: 12),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: LinearProgressIndicator(
+                value: progress,
+                minHeight: 10,
+                backgroundColor: const Color(0xFFE2E8F0),
+                valueColor: const AlwaysStoppedAnimation(AppTheme.primaryColor),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '$_received 中 $_total 字节已接收',
+              style: const TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '${_formatSize(_received)} / ${_formatSize(_total)}  ($percent%)',
+              style: const TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              widget.updateInfo.fileName,
+              style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              _statusText,
+              style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (widget.updateInfo.forceUpdate)
+              const Text('本次为强制更新，不可取消',
+                  style: TextStyle(fontSize: 12, color: AppTheme.errorColor))
+            else if (_cancelRequested)
+              const Text('正在取消…',
+                  style:
+                      TextStyle(fontSize: 12, color: AppTheme.textSecondary))
+            else
+              TextButton(
+                onPressed: () {
+                  setState(() => _cancelRequested = true);
+                  widget.onCancel?.call();
+                },
+                child: const Text('取消下载'),
+              ),
+            const SizedBox(width: 8),
+            const Icon(Icons.info_outline, size: 14, color: AppTheme.textSecondary),
+            const SizedBox(width: 4),
+            const Text('请勿关闭程序',
+                style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+            const SizedBox(width: 8),
+          ],
+        ),
+      ],
     );
   }
 }

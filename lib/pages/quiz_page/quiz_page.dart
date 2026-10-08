@@ -3,6 +3,7 @@ library quiz_page;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -12,6 +13,7 @@ import '../../services/quiz_service.dart';
 import '../../services/local_storage_service.dart';
 import '../../services/socket_service.dart';
 import '../../services/vhd_service.dart';
+import '../../services/window_mode_service.dart';
 import '../../theme/app_theme.dart';
 import '../result_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -62,6 +64,10 @@ class _QuizPageState extends State<QuizPage>
   bool _isDownloadingImages = false;
   int _totalImages = 0;
   int _downloadedImages = 0;
+  /// 当前加载步骤（进入答题时给用户进度反馈，避免看起来"卡住"）
+  String _loadingStep = '准备加载…';
+  /// 打字题是否已排入"分行"回调，防止 LayoutBuilder 每帧重复注册导致无限重建
+  bool _typingSplitScheduled = false;
   String? _errorMessage;
   final List<String> _questionBanks = [];
   String? _selectedBank;
@@ -228,6 +234,8 @@ class _QuizPageState extends State<QuizPage>
     _timer?.cancel();
     _examTimer?.cancel();
     _stopWindowCheck();
+    // 退出答题：恢复进入前的窗口状态（幂等，返回/交卷两条路径都会走到）
+    WindowModeService.exitQuizFullScreen();
     for (final typingState in _typingStates.values) {
       typingState.dispose();
     }
@@ -241,30 +249,10 @@ class _QuizPageState extends State<QuizPage>
   }
 
   /// 进入全屏模式
+  /// 先记录进入前的窗口状态，退出时由 WindowModeService 统一恢复
   Future<void> _enterFullScreen() async {
-    try {
-      await windowManager.setFullScreen(true).timeout(
-        const Duration(seconds: 3),
-        onTimeout: () {
-          debugPrint('setFullScreen 超时，尝试最大化');
-          try {
-            windowManager.maximize();
-          } catch (_) {}
-        },
-      );
-    } catch (e) {
-      debugPrint('进入全屏失败: $e');
-      try {
-        await windowManager.maximize().timeout(
-          const Duration(seconds: 3),
-          onTimeout: () {
-            debugPrint('maximize 超时');
-          },
-        );
-      } catch (e2) {
-        debugPrint('窗口最大化失败: $e2');
-      }
-    }
+    await WindowModeService.capturePreQuizState();
+    await WindowModeService.enterQuizFullScreen();
   }
 
   /// 退出全屏模式
@@ -375,7 +363,7 @@ class _QuizPageState extends State<QuizPage>
                 ),
               ),
             ] else ...[
-              const Text('加载中...'),
+              Text(_loadingStep),
             ],
           ],
         ),
@@ -791,6 +779,7 @@ class _QuizPageState extends State<QuizPage>
       ),
     );
   }
+
 
   /// 缩放下拉框（美化UI）
   Widget _buildScaleDropdown() {

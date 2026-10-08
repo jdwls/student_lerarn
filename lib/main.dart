@@ -10,6 +10,7 @@ import 'services/api_service.dart';
 import 'services/quiz_service.dart';
 import 'services/socket_service.dart';
 import 'services/single_instance_service.dart';
+import 'services/update_service.dart';
 import 'theme/app_theme.dart';
 
 void main() async {
@@ -18,6 +19,8 @@ void main() async {
   // 先初始化 ApiService（读取配置）
   await ApiService.init();
   await QuizService.init();
+  // 初始化在线升级服务（读取当前版本号）
+  await UpdateService.init().catchError((_) {});
   // 启动时尝试消费上次网络失败的成绩队列
   await ApiService.drainPendingTypingSubmissions();
   // 小测队列消费与网络初始化失败时不影响启动

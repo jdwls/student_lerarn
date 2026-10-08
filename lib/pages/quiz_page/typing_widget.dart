@@ -619,10 +619,18 @@ mixin _TypingWidgetMixin on State<QuizPage> {
       // constraints.maxWidth 是 LayoutBuilder 提供的约束宽度
       // Container padding(32) + border(2) + 原有外层 padding(16) + border(2) = 52
       final textWidth = constraints.maxWidth - 52;
-      if (textWidth > 0 && _quizState._typingLines.isEmpty) {
+      // 防死循环：同一时刻只允许一个"分行"回调在排队，
+      // 且只有确实分出行来才 setState，否则会每帧重建导致界面假死
+      if (textWidth > 0 &&
+          _quizState._typingLines.isEmpty &&
+          !_quizState._typingSplitScheduled) {
+        _quizState._typingSplitScheduled = true;
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (_quizState.mounted) {
-            _doSplitLines(textWidth);
+          _quizState._typingSplitScheduled = false;
+          if (!_quizState.mounted) return;
+          final before = _quizState._typingLines.length;
+          _doSplitLines(textWidth);
+          if (_quizState._typingLines.length != before) {
             _quizState.setState(() {});
           }
         });

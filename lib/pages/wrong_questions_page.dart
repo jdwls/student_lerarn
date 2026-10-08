@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:window_manager/window_manager.dart';
+import '../services/window_mode_service.dart';
 
 /// 错题本页面
 class WrongQuestionsPage extends StatefulWidget {
@@ -31,7 +31,8 @@ class _WrongQuestionsPageState extends State<WrongQuestionsPage> {
 
   Future<void> _enterFullScreen() async {
     try {
-      await windowManager.setFullScreen(true);
+      await WindowModeService.capturePreQuizState();
+      await WindowModeService.enterQuizFullScreen();
     } catch (e) {
       debugPrint('进入全屏失败: $e');
     }
@@ -39,7 +40,7 @@ class _WrongQuestionsPageState extends State<WrongQuestionsPage> {
 
   Future<void> _exitFullScreen() async {
     try {
-      await windowManager.setFullScreen(false);
+      await WindowModeService.exitQuizFullScreen();
     } catch (e) {
       debugPrint('退出全屏失败: $e');
     }

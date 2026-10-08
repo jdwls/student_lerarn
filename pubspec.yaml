@@ -1,7 +1,7 @@
 name: student
 description: 学生端应用
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.1.0+1
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -34,6 +34,8 @@ dependencies:
   intl: ^0.18.1
   uuid: ^4.2.1
   path: ^1.8.3
+  # 哈希校验（在线升级安装包 MD5）
+  crypto: ^3.0.3
   
   # 窗口管理
   window_manager: ^0.3.7
