@@ -47,7 +47,8 @@ abstract class BaseTypingPage extends StatefulWidget {
   const BaseTypingPage({super.key, required this.config});
 }
 
-abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> with RouteAware {
+abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
+    with RouteAware {
   // 配置参数
   TypingConfig get config => widget.config;
 
@@ -161,12 +162,16 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
         if (data['success'] == true && data['data'] != null) {
           final cfg = data['data'] as Map<String, dynamic>;
           if (!mounted) return;
-          int parseInt(dynamic value, int fallback) =>
-              value is num ? value.toInt() : int.tryParse(value?.toString() ?? '') ?? fallback;
+          int parseInt(dynamic value, int fallback) => value is num
+              ? value.toInt()
+              : int.tryParse(value?.toString() ?? '') ?? fallback;
           setState(() {
-            _timeLimitMinutes = parseInt(cfg['time_limit'], config.defaultTimeLimitMinutes);
-            _targetSpeed = parseInt(cfg['target_speed'], config.defaultTargetSpeed);
-            _targetChars = parseInt(cfg['target_chars'], config.defaultTargetChars);
+            _timeLimitMinutes =
+                parseInt(cfg['time_limit'], config.defaultTimeLimitMinutes);
+            _targetSpeed =
+                parseInt(cfg['target_speed'], config.defaultTargetSpeed);
+            _targetChars =
+                parseInt(cfg['target_chars'], config.defaultTargetChars);
             _pointsPerError = (cfg['points_per_error'] is num)
                 ? (cfg['points_per_error'] as num).toDouble()
                 : double.tryParse(cfg['points_per_error']?.toString() ?? '') ??
@@ -272,7 +277,8 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
             return KeyEventResult.handled;
           }
         }
-        if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.backspace) {
+        if (event is KeyDownEvent &&
+            event.logicalKey == LogicalKeyboardKey.backspace) {
           final controller = _lineControllers[lineIdx];
           if (controller.selection.baseOffset == 0 && lineIdx > 0) {
             setState(() {
@@ -297,7 +303,10 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
 
   void _generateNewText() {
     if (_practiceTexts.isEmpty) return;
-    if (!_randomArticle && _selectedArticleIndex != null && _selectedArticleIndex! >= 0 && _selectedArticleIndex! < _practiceTexts.length) {
+    if (!_randomArticle &&
+        _selectedArticleIndex != null &&
+        _selectedArticleIndex! >= 0 &&
+        _selectedArticleIndex! < _practiceTexts.length) {
       // 教师端指定了特定文章
       _currentText = _practiceTexts[_selectedArticleIndex!];
     } else {
@@ -314,7 +323,7 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
     return config.baseFontSize * scale;
   }
 
-  /// 使用精确可用宽度进行分行
+  /// 按原文实际绘制宽度分行，确保中文原文与输入框逐行对应。
   void _splitLines(double width) {
     if (_currentText.isEmpty) return;
     if (_lines.isNotEmpty && (width - _lastLayoutWidth).abs() < 1.0) return;
@@ -323,21 +332,41 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
     _fontSize = _calcFontSize(width);
     _inputFontSize = _fontSize - (config.type == 'english' ? 1 : 0.5);
 
-    final availableWidth = width - 36;
+    // 外层容器左右 padding 为 24，原文行左右 padding 为 8。
+    final availableWidth = width - 66;
     if (availableWidth <= 0) return;
 
-    final style = TextStyle(fontSize: _fontSize, height: 1.6, fontFamily: config.fontFamily);
-    final tp = TextPainter(
-      text: TextSpan(text: config.type == 'english' ? 'W' : '字', style: style),
-      textDirection: TextDirection.ltr,
-      maxLines: 1,
-    )..layout();
-    final charWidth = tp.width;
-    tp.dispose();
-    if (charWidth <= 0) return;
-
-    final charsPerLine = (availableWidth / charWidth).floor();
-    if (charsPerLine <= 0) return;
+    final style = TextStyle(
+      fontSize: _fontSize,
+      height: 1.6,
+      fontFamily: config.fontFamily,
+      fontWeight: FontWeight.bold,
+    );
+    int lineEnd(String text, int start) {
+      var low = start + 1;
+      var high = text.length;
+      var best = low;
+      while (low <= high) {
+        final middle = (low + high) ~/ 2;
+        final painter = TextPainter(
+          text: TextSpan(text: text.substring(start, middle), style: style),
+          textDirection: TextDirection.ltr,
+          maxLines: 1,
+        )..layout(maxWidth: availableWidth);
+        final fits =
+            painter.didExceedMaxLines || painter.width > availableWidth + 0.1
+                ? false
+                : true;
+        painter.dispose();
+        if (fits) {
+          best = middle;
+          low = middle + 1;
+        } else {
+          high = middle - 1;
+        }
+      }
+      return best;
+    }
 
     final oldLineInputs = List<String>.from(_lineInputs);
     final oldActiveLine = _activeLine;
@@ -348,16 +377,18 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
     _lineFocusNodes.clear();
 
     _lines = [];
-    for (int i = 0; i < _currentText.length; i += charsPerLine) {
-      final end = (i + charsPerLine < _currentText.length) ? i + charsPerLine : _currentText.length;
+    for (int i = 0; i < _currentText.length;) {
+      final end = lineEnd(_currentText, i);
       _lines.add(_currentText.substring(i, end));
+      i = end;
     }
 
     for (int i = 0; i < _lines.length; i++) {
       if (i < oldLineInputs.length) {
         final input = oldLineInputs[i];
-        _lineInputs
-            .add(input.length <= _lines[i].length ? input : input.substring(0, _lines[i].length));
+        _lineInputs.add(input.length <= _lines[i].length
+            ? input
+            : input.substring(0, _lines[i].length));
       } else {
         _lineInputs.add('');
       }
@@ -365,7 +396,8 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
       _lineFocusNodes.add(_createLineFocusNode(i));
     }
 
-    _activeLine = oldActiveLine < _lines.length ? oldActiveLine : _lines.length - 1;
+    _activeLine =
+        oldActiveLine < _lines.length ? oldActiveLine : _lines.length - 1;
     if (_activeLine < 0) _activeLine = 0;
 
     _totalTyped = 0;
@@ -534,13 +566,19 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
       if (!mounted) return;
       setState(() {
         _isFinished = true;
-        double baseScore = (speed / _targetSpeed * _totalScore).clamp(0, _totalScore).toDouble();
-        _score = (baseScore - errorCount * _pointsPerError).clamp(0, _totalScore).toDouble();
+        double baseScore = (speed / _targetSpeed * _totalScore)
+            .clamp(0, _totalScore)
+            .toDouble();
+        _score = (baseScore - errorCount * _pointsPerError)
+            .clamp(0, _totalScore)
+            .toDouble();
       });
 
-      final accuracy = _totalTyped > 0 ? (_correctChars / _totalTyped * 100).round() : 0;
-      final speedRounded =
-          _elapsedSeconds > 0 ? (_correctChars / (_elapsedSeconds / 60.0)).round() : 0;
+      final accuracy =
+          _totalTyped > 0 ? (_correctChars / _totalTyped * 100).round() : 0;
+      final speedRounded = _elapsedSeconds > 0
+          ? (_correctChars / (_elapsedSeconds / 60.0)).round()
+          : 0;
       final userProvider = context.read<UserProvider>();
       userProvider.addTypingResult({
         'type': config.type,
@@ -560,7 +598,8 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
           ? '${currentUser.id}_typing_${config.type}_${DateTime.now().millisecondsSinceEpoch}'
           : 'typing_${config.type}_${DateTime.now().millisecondsSinceEpoch}';
 
-      await _saveTypingScoreToServer(_score.round(), speedRounded, accuracy, submissionId);
+      await _saveTypingScoreToServer(
+          _score.round(), speedRounded, accuracy, submissionId);
 
       if (!mounted) return;
       showDialog(
@@ -579,13 +618,15 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('成绩: ${_score.round()}/$_totalScore 分',
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  style: const TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
               Text('已打字符数: $_totalTyped', style: const TextStyle(fontSize: 16)),
               const SizedBox(height: 4),
               Text('错误字符数: $errorCount',
-                  style:
-                      TextStyle(fontSize: 16, color: errorCount > 0 ? Colors.red : Colors.green)),
+                  style: TextStyle(
+                      fontSize: 16,
+                      color: errorCount > 0 ? Colors.red : Colors.green)),
               const SizedBox(height: 4),
               Text('准确率: $accuracy%', style: const TextStyle(fontSize: 16)),
             ],
@@ -656,7 +697,8 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
           return;
         }
       }
-      final saved = await _savePendingSubmission(score, speed, accuracy, submissionId);
+      final saved =
+          await _savePendingSubmission(score, speed, accuracy, submissionId);
       if (!saved) {
         print('警告: 成绩保存失败且无法写入待同步队列，请重新提交');
       }
@@ -679,7 +721,8 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
       final storage = LocalStorageService.instance;
       // 整个读改写过程在单文件锁内执行，避免并发写入导致记录丢失
       return storage.withFileLock('pending_typing_submissions.json', () async {
-        final pending = await storage.readJson('pending_typing_submissions.json');
+        final pending =
+            await storage.readJson('pending_typing_submissions.json');
         final submissions = (pending['submissions'] as List<dynamic>?) ?? [];
         final pendingPayload = {
           'submission_id': submissionId,
@@ -699,7 +742,8 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
           'retry_count': 0,
         };
         submissions.add(pendingPayload);
-        final saved = await storage.writeJson('pending_typing_submissions.json', {
+        final saved =
+            await storage.writeJson('pending_typing_submissions.json', {
           'submissions': submissions,
         });
         if (!saved) {
@@ -792,10 +836,13 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
                 const SizedBox(width: 8),
                 Text(config.title,
                     style: const TextStyle(
-                        fontSize: 20, fontWeight: FontWeight.w800, color: AppTheme.textPrimary)),
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800,
+                        color: AppTheme.textPrimary)),
                 const Spacer(),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   decoration: BoxDecoration(
                     color: _remainingSeconds <= 60 && _isStarted
                         ? Colors.red.withAlpha(26)
@@ -812,36 +859,45 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
                 ),
                 const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
                     color: const Color(0xFFF8FAFC),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text('已打字数: $_totalTyped',
                       style: const TextStyle(
-                          fontSize: 14, fontWeight: FontWeight.bold, color: AppTheme.textPrimary)),
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: AppTheme.textPrimary)),
                 ),
                 const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
                     color: const Color(0xFFF8FAFC),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text('正确: $_correctChars',
                       style: const TextStyle(
-                          fontSize: 14, fontWeight: FontWeight.bold, color: Colors.green)),
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.green)),
                 ),
                 const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
                     color: const Color(0xFFF8FAFC),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text('错误: ${_totalTyped - _correctChars}',
                       style: const TextStyle(
-                          fontSize: 14, fontWeight: FontWeight.bold, color: Colors.red)),
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.red)),
                 ),
                 const SizedBox(width: 8),
                 if (!_isStarted && !_isLoadingArticles && _loadError == null)
@@ -852,8 +908,10 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppTheme.primaryColor,
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 8),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8)),
                     ),
                   )
                 else if (_isFinished)
@@ -864,8 +922,10 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.green,
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 8),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8)),
                     ),
                   )
                 else if (_isPaused)
@@ -876,8 +936,10 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.green,
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 8),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8)),
                     ),
                   )
                 else if (_isStarted)
@@ -888,8 +950,10 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.orange,
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 8),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8)),
                     ),
                   ),
               ],
@@ -905,7 +969,8 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
                   children: [
                     CircularProgressIndicator(),
                     SizedBox(height: 16),
-                    Text('正在从教师端加载文章...', style: TextStyle(fontSize: 16, color: Colors.grey)),
+                    Text('正在从教师端加载文章...',
+                        style: TextStyle(fontSize: 16, color: Colors.grey)),
                   ],
                 ),
               ),
@@ -916,11 +981,13 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.error_outline, size: 48, color: Colors.red),
+                    const Icon(Icons.error_outline,
+                        size: 48, color: Colors.red),
                     const SizedBox(height: 16),
                     Text(_loadError!,
                         textAlign: TextAlign.center,
-                        style: const TextStyle(fontSize: 16, color: Colors.red)),
+                        style:
+                            const TextStyle(fontSize: 16, color: Colors.red)),
                     const SizedBox(height: 16),
                     ElevatedButton.icon(
                       onPressed: _fetchArticles,
@@ -937,7 +1004,7 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 24),
                 child: LayoutBuilder(builder: (context, constraints) {
-                  _splitLines(constraints.maxWidth - 48);
+                  _splitLines(constraints.maxWidth);
                   if (_lines.isEmpty) return const SizedBox.shrink();
 
                   return Container(
@@ -961,12 +1028,17 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
                               // 原文行（实时变色）
                               Container(
                                 width: double.infinity,
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 4),
                                 decoration: BoxDecoration(
-                                  color: isActive ? Colors.blue.withAlpha(13) : null,
+                                  color: isActive
+                                      ? Colors.blue.withAlpha(13)
+                                      : null,
                                 ),
                                 child: Builder(builder: (context) {
-                                  final input = isDone || isActive ? _lineInputs[lineIdx] : '';
+                                  final input = isDone || isActive
+                                      ? _lineInputs[lineIdx]
+                                      : '';
                                   List<InlineSpan> spans = [];
                                   for (int i = 0; i < line.length; i++) {
                                     Color textColor;
@@ -992,17 +1064,20 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
                                             height: 1.6,
                                             fontFamily: config.fontFamily)));
                                   }
-                                  return RichText(text: TextSpan(children: spans));
+                                  return RichText(
+                                      text: TextSpan(children: spans));
                                 }),
                               ),
                               // 每行下方都有输入框/结果
                               Container(
                                 width: double.infinity,
                                 margin: const EdgeInsets.symmetric(vertical: 4),
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 6),
                                 decoration: BoxDecoration(
-                                  color:
-                                      isActive ? const Color(0xFFEEF5FF) : const Color(0xFFF8FAFC),
+                                  color: isActive
+                                      ? const Color(0xFFEEF5FF)
+                                      : const Color(0xFFF8FAFC),
                                   border: Border.all(
                                       color: isActive
                                           ? AppTheme.primaryColor.withAlpha(128)
@@ -1028,18 +1103,22 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
                                               ? 'Type the text above here...'
                                               : '请在此输入上方文字...')
                                           : '',
-                                      hintStyle: TextStyle(color: Colors.grey[400]),
+                                      hintStyle:
+                                          TextStyle(color: Colors.grey[400]),
                                       border: OutlineInputBorder(
                                         borderRadius: BorderRadius.circular(0),
-                                        borderSide: BorderSide(color: const Color(0xFFD6DBE8)),
+                                        borderSide: BorderSide(
+                                            color: const Color(0xFFD6DBE8)),
                                       ),
                                       enabledBorder: OutlineInputBorder(
                                         borderRadius: BorderRadius.circular(0),
-                                        borderSide: BorderSide(color: const Color(0xFFD6DBE8)),
+                                        borderSide: BorderSide(
+                                            color: const Color(0xFFD6DBE8)),
                                       ),
                                       focusedBorder: OutlineInputBorder(
                                         borderRadius: BorderRadius.circular(0),
-                                        borderSide: BorderSide(color: const Color(0xFFD6DBE8)),
+                                        borderSide: BorderSide(
+                                            color: const Color(0xFFD6DBE8)),
                                       ),
                                       isCollapsed: true,
                                       contentPadding: EdgeInsets.zero,
@@ -1051,7 +1130,8 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T> wi
                                         });
                                       }
                                     },
-                                    onChanged: (value) => _onLineChanged(lineIdx, value),
+                                    onChanged: (value) =>
+                                        _onLineChanged(lineIdx, value),
                                   ),
                                 ),
                               ),

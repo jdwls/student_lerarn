@@ -27,10 +27,13 @@ class WindowModeService {
 
   /// 是否处于答题（全屏）模式
   static bool _active = false;
+
   /// 进入答题前是否为最大化
   static bool _wasMaximized = false;
+
   /// 进入答题前是否已是全屏
   static bool _wasFullScreen = false;
+
   /// 进入答题前的窗口尺寸
   static Size? _normalSize;
 
@@ -69,11 +72,19 @@ class WindowModeService {
 
       await windowManager.setFullScreen(true).timeout(_timeout);
     } catch (e) {
-      debugPrint('进入答题全屏失败，回退为最大化: $e');
+      debugPrint('进入答题全屏失败，回退为最大化窗口: $e');
+      try {
+        await windowManager.setFullScreen(false).timeout(_timeout);
+      } catch (_) {}
+      try {
+        await windowManager.restore().timeout(_timeout);
+      } catch (_) {}
       try {
         await windowManager.maximize().timeout(_timeout);
+        await windowManager.show().timeout(_timeout);
+        await windowManager.focus().timeout(_timeout);
       } catch (e2) {
-        debugPrint('窗口最大化失败: $e2');
+        debugPrint('窗口最大化或激活失败: $e2');
       }
     }
   }

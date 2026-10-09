@@ -24,6 +24,9 @@ class SocketService {
   static String _serverIp = 'localhost';
   static const int _socketPort = 20021;
 
+  /// 学生端当前上报状态（online/typing/exam 等），供第三方服务判定所处场景
+  String get currentStatus => _currentStatus;
+
   int _reconnectAttempts = 0;
   static const int _maxReconnectDelay = 60;
   static const int _baseReconnectDelay = 1;

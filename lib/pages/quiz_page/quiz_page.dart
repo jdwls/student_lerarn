@@ -64,8 +64,10 @@ class _QuizPageState extends State<QuizPage>
   bool _isDownloadingImages = false;
   int _totalImages = 0;
   int _downloadedImages = 0;
+
   /// 当前加载步骤（进入答题时给用户进度反馈，避免看起来"卡住"）
   String _loadingStep = '准备加载…';
+
   /// 打字题是否已排入"分行"回调，防止 LayoutBuilder 每帧重复注册导致无限重建
   bool _typingSplitScheduled = false;
   String? _errorMessage;
@@ -222,9 +224,9 @@ class _QuizPageState extends State<QuizPage>
     } catch (e) {
       debugPrint('更新Socket状态为exam失败: $e');
     }
-    // 进入全屏
+    // 等页面路由切换完成后再改原生窗口状态，避免 Windows 窗口重绘与路由动画竞争。
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _enterFullScreen();
+      _enterFullScreenAfterRouteTransition();
     });
     _loadQuestionBanks();
   }
@@ -248,10 +250,34 @@ class _QuizPageState extends State<QuizPage>
     super.dispose();
   }
 
-  /// 进入全屏模式
-  /// 先记录进入前的窗口状态，退出时由 WindowModeService 统一恢复
-  Future<void> _enterFullScreen() async {
+  /// 等待路由转场完成后再切换原生窗口模式，避免转场中的帧被全屏调整打断。
+  Future<void> _enterFullScreenAfterRouteTransition() async {
+    if (!mounted) return;
+
+    final route = ModalRoute.of(context);
+    final animation = route?.animation;
+    if (animation != null && animation.status != AnimationStatus.completed) {
+      final transitionCompleted = Completer<void>();
+      void onStatusChanged(AnimationStatus status) {
+        if (status == AnimationStatus.completed &&
+            !transitionCompleted.isCompleted) {
+          transitionCompleted.complete();
+        }
+      }
+
+      animation.addStatusListener(onStatusChanged);
+      try {
+        await transitionCompleted.future.timeout(const Duration(seconds: 2));
+      } on TimeoutException {
+        debugPrint('小测页面路由转场等待超时，继续进入答题模式');
+      } finally {
+        animation.removeStatusListener(onStatusChanged);
+      }
+    }
+
+    if (!mounted) return;
     await WindowModeService.capturePreQuizState();
+    if (!mounted) return;
     await WindowModeService.enterQuizFullScreen();
   }
 
@@ -682,10 +708,12 @@ class _QuizPageState extends State<QuizPage>
           label: Text(isCompleted ? '重新操作' : '开始操作',
               style: const TextStyle(fontSize: 16)),
           style: ElevatedButton.styleFrom(
-            backgroundColor: isCompleted ? Colors.orange : AppTheme.primaryColor,
+            backgroundColor:
+                isCompleted ? Colors.orange : AppTheme.primaryColor,
             foregroundColor: Colors.white,
             padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 12),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           ),
         ),
       ),
@@ -697,7 +725,8 @@ class _QuizPageState extends State<QuizPage>
     final currentType = _currentQuestions[_currentQuestionIndex]['type'];
     final isStarred = _starredQuestions.contains(_currentQuestionIndex);
     // 缩放下拉框显示条件：选择题、连线题、顺序题、操作题
-    final showScaleDropdown = ['choice', 'matching', 'sequential', 'operation'].contains(currentType);
+    final showScaleDropdown =
+        ['choice', 'matching', 'sequential', 'operation'].contains(currentType);
 
     return Container(
       decoration: BoxDecoration(
@@ -754,8 +783,7 @@ class _QuizPageState extends State<QuizPage>
         },
         borderRadius: BorderRadius.circular(8),
         child: Padding(
-          padding:
-              const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -779,7 +807,6 @@ class _QuizPageState extends State<QuizPage>
       ),
     );
   }
-
 
   /// 缩放下拉框（美化UI）
   Widget _buildScaleDropdown() {
@@ -815,19 +842,23 @@ class _QuizPageState extends State<QuizPage>
                 items: [
                   DropdownMenuItem(
                     value: 0.5,
-                    child: Text('50%', style: TextStyle(fontSize: 13, color: Colors.black87)),
+                    child: Text('50%',
+                        style: TextStyle(fontSize: 13, color: Colors.black87)),
                   ),
                   DropdownMenuItem(
                     value: 1.0,
-                    child: Text('100%', style: TextStyle(fontSize: 13, color: Colors.black87)),
+                    child: Text('100%',
+                        style: TextStyle(fontSize: 13, color: Colors.black87)),
                   ),
                   DropdownMenuItem(
                     value: 1.5,
-                    child: Text('150%', style: TextStyle(fontSize: 13, color: Colors.black87)),
+                    child: Text('150%',
+                        style: TextStyle(fontSize: 13, color: Colors.black87)),
                   ),
                   DropdownMenuItem(
                     value: 2.0,
-                    child: Text('200%', style: TextStyle(fontSize: 13, color: Colors.black87)),
+                    child: Text('200%',
+                        style: TextStyle(fontSize: 13, color: Colors.black87)),
                   ),
                 ],
                 onChanged: (v) {
@@ -849,9 +880,7 @@ class _QuizPageState extends State<QuizPage>
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
         decoration: BoxDecoration(
-          color: !_canSubmitExam
-              ? Colors.grey[400]
-              : AppTheme.successColor,
+          color: !_canSubmitExam ? Colors.grey[400] : AppTheme.successColor,
           borderRadius: BorderRadius.circular(8),
         ),
         child: Row(
@@ -866,7 +895,9 @@ class _QuizPageState extends State<QuizPage>
                       : '交卷'
                   : '交卷',
               style: const TextStyle(
-                  fontSize: 16, color: Colors.white, fontWeight: FontWeight.bold),
+                  fontSize: 16,
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold),
             ),
           ],
         ),
@@ -1241,91 +1272,91 @@ class _QuizPageState extends State<QuizPage>
         // 题号列表 - 每行4个
         if (questions.isNotEmpty)
           GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 4,
-              crossAxisSpacing: 6,
-              mainAxisSpacing: 6,
-              childAspectRatio: 1.0,
-            ),
-            itemCount: questions.length,
-            itemBuilder: (context, index) {
-              // 计算全局索引
-              int globalIndex = _getGlobalIndex(type, index);
-              final isCurrent = globalIndex == _currentQuestionIndex;
-              final isAnswered = _answers.containsKey(globalIndex);
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 4,
+                crossAxisSpacing: 6,
+                mainAxisSpacing: 6,
+                childAspectRatio: 1.0,
+              ),
+              itemCount: questions.length,
+              itemBuilder: (context, index) {
+                // 计算全局索引
+                int globalIndex = _getGlobalIndex(type, index);
+                final isCurrent = globalIndex == _currentQuestionIndex;
+                final isAnswered = _answers.containsKey(globalIndex);
 
-              return GestureDetector(
-                onTap: () {
-                  setState(() {
-                    _selectedQuestionType = type;
-                    _currentQuestionIndex = globalIndex;
-                  });
-                },
-                child: SizedBox(
-                  width: 40,
-                  height: 40,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    decoration: BoxDecoration(
-                      color: isCurrent
-                          ? color
-                          : isAnswered
-                              ? color.withAlpha(51)
-                              : Colors.grey[100],
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
+                return GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _selectedQuestionType = type;
+                      _currentQuestionIndex = globalIndex;
+                    });
+                  },
+                  child: SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      decoration: BoxDecoration(
                         color: isCurrent
                             ? color
                             : isAnswered
-                                ? color
-                                : Colors.grey[300]!,
-                        width: isCurrent ? 2 : 1,
-                      ),
-                      boxShadow: isCurrent
-                          ? [
-                              BoxShadow(
-                                color: color.withAlpha(77),
-                                blurRadius: 4,
-                                offset: const Offset(0, 2),
-                              ),
-                            ]
-                          : null,
-                    ),
-                    child: Stack(
-                      children: [
-                        Center(
-                          child: Text(
-                            '${index + 1}',
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                              color: isCurrent
-                                  ? Colors.white
-                                  : isAnswered
-                                      ? color
-                                      : Colors.grey[600],
-                            ),
-                          ),
+                                ? color.withAlpha(51)
+                                : Colors.grey[100],
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: isCurrent
+                              ? color
+                              : isAnswered
+                                  ? color
+                                  : Colors.grey[300]!,
+                          width: isCurrent ? 2 : 1,
                         ),
-                        // 加星图标（仅已加星的题目显示）
-                        if (_starredQuestions.contains(globalIndex))
-                          Positioned(
-                            right: 0,
-                            top: 0,
-                            child: Icon(
-                              Icons.star,
-                              size: 14,
-                              color: Colors.amber[600],
+                        boxShadow: isCurrent
+                            ? [
+                                BoxShadow(
+                                  color: color.withAlpha(77),
+                                  blurRadius: 4,
+                                  offset: const Offset(0, 2),
+                                ),
+                              ]
+                            : null,
+                      ),
+                      child: Stack(
+                        children: [
+                          Center(
+                            child: Text(
+                              '${index + 1}',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                color: isCurrent
+                                    ? Colors.white
+                                    : isAnswered
+                                        ? color
+                                        : Colors.grey[600],
+                              ),
                             ),
                           ),
-                      ],
+                          // 加星图标（仅已加星的题目显示）
+                          if (_starredQuestions.contains(globalIndex))
+                            Positioned(
+                              right: 0,
+                              top: 0,
+                              child: Icon(
+                                Icons.star,
+                                size: 14,
+                                color: Colors.amber[600],
+                              ),
+                            ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-              );
-            }),
+                );
+              }),
       ],
     );
   }

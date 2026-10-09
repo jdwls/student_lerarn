@@ -200,56 +200,11 @@ class _MainHomePageState extends State<MainHomePage> with RouteAware {
           setState(() {
             _activeClassId = activeClassId;
           });
-          // 班级变化时重新获取学生信息（积分等）
-          _refreshStudentInfo();
+          // 活跃班级只用于展示/后续流程，不重新查找已登录学生，避免覆盖身份资料。
         }
       }
     } catch (e) {
       debugPrint('获取活跃班级失败: $e');
-    }
-  }
-
-  /// 班级切换时重新获取学生信息（姓名、积分等）
-  Future<void> _refreshStudentInfo() async {
-    try {
-      // 在async gap之前捕获provider，避免use_build_context_synchronously警告
-      final auth = context.read<AuthProvider>();
-      final userProvider = context.read<UserProvider>();
-      final user = auth.currentUser;
-      if (user == null) return;
-
-      final computerName = user.computerName ?? '';
-      final ip = user.ip ?? '';
-      if (computerName.isEmpty || ip.isEmpty) return;
-
-      debugPrint('重新获取学生信息: computer=$computerName, ip=$ip');
-      final response = await _apiService.post('/student/find', {
-        'computer_name': computerName,
-        'ip': ip,
-      });
-
-      if (response.containsKey('student') && response['student'] != null) {
-        final student = response['student'] as Map<String, dynamic>;
-        final newName = student['name'] as String? ?? '';
-        final newClassId = student['class_id'] as String? ?? '';
-        final newPoints = student['points'] as int? ?? 0;
-
-        debugPrint(
-            '获取到学生信息: name=$newName, class=$newClassId, points=$newPoints');
-
-        // 更新 AuthProvider 中的用户信息
-        final updatedUser = user.copyWith(
-          name: newName,
-          classId: newClassId,
-        );
-        auth.updateCurrentUser(updatedUser);
-
-        // 更新 UserProvider
-        userProvider.setUser(updatedUser);
-        userProvider.setPointsDirectly(newPoints);
-      }
-    } catch (e) {
-      debugPrint('重新获取学生信息失败: $e');
     }
   }
 
@@ -1424,9 +1379,8 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final double progress = _total > 0
-        ? (_received / _total).clamp(0.0, 1.0)
-        : 0.0;
+    final double progress =
+        _total > 0 ? (_received / _total).clamp(0.0, 1.0) : 0.0;
     final int percent = (progress * 100).round();
 
     return AlertDialog(
@@ -1462,18 +1416,19 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog> {
             const SizedBox(height: 8),
             Text(
               '${_formatSize(_received)} / ${_formatSize(_total)}  ($percent%)',
-              style: const TextStyle(
-                  fontSize: 13, fontWeight: FontWeight.w600),
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 4),
             Text(
               widget.updateInfo.fileName,
-              style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
+              style:
+                  const TextStyle(fontSize: 11, color: AppTheme.textSecondary),
             ),
             const SizedBox(height: 12),
             Text(
               _statusText,
-              style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+              style:
+                  const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
             ),
           ],
         ),
@@ -1487,8 +1442,7 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog> {
                   style: TextStyle(fontSize: 12, color: AppTheme.errorColor))
             else if (_cancelRequested)
               const Text('正在取消…',
-                  style:
-                      TextStyle(fontSize: 12, color: AppTheme.textSecondary))
+                  style: TextStyle(fontSize: 12, color: AppTheme.textSecondary))
             else
               TextButton(
                 onPressed: () {
@@ -1498,7 +1452,8 @@ class _UpdateProgressDialogState extends State<_UpdateProgressDialog> {
                 child: const Text('取消下载'),
               ),
             const SizedBox(width: 8),
-            const Icon(Icons.info_outline, size: 14, color: AppTheme.textSecondary),
+            const Icon(Icons.info_outline,
+                size: 14, color: AppTheme.textSecondary),
             const SizedBox(width: 4),
             const Text('请勿关闭程序',
                 style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),

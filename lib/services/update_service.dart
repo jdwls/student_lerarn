@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as path;
 import 'api_service.dart';
+import 'socket_service.dart';
 import '../utils/app_path.dart';
 
 /// 更新信息
@@ -20,16 +21,12 @@ class UpdateInfo {
   /// 是否强制更新（进度对话框不可取消）
   final bool forceUpdate;
 
-  /// 学生端被允许的最低版本（当前版本低于它则强制更新；空表示不限制）
-  final String minVersion;
-
   UpdateInfo({
     required this.version,
     required this.fileName,
     required this.fileSize,
     this.md5Hex = '',
     this.forceUpdate = false,
-    this.minVersion = '',
   });
 
   factory UpdateInfo.fromJson(Map<String, dynamic> json) {
@@ -39,7 +36,6 @@ class UpdateInfo {
       fileSize: (json['file_size'] as num?)?.toInt() ?? 0,
       md5Hex: (json['md5'] ?? '').toString().trim(),
       forceUpdate: json['force_update'] == true,
-      minVersion: (json['min_version'] ?? '').toString().trim(),
     );
   }
 }
@@ -206,7 +202,14 @@ class UpdateService {
   }
 
   /// 立即检查一次；发现新版本时触发 startPeriodicCheck 注册的回调
+  ///
+  /// 考试进行中（socket 状态 = exam）暂停升级：不检查、不下载、不弹窗，
+  /// 本轮直接跳过，等待下一个周期。
   Future<void> checkNow() async {
+    if (SocketService.instance.currentStatus == 'exam') {
+      debugPrint('考试进行中，跳过本轮更新检查');
+      return;
+    }
     final id = _studentId ?? '';
     final info = await checkForUpdate(id);
     if (info == null) return;
@@ -232,9 +235,10 @@ class UpdateService {
             debugPrint('检查更新：教师端未提供安装包文件名，跳过');
             return null;
           }
-          // 客户端再兜一层：目标版本必须真的比当前版本新，避免降级/版本抖动
-          if (compareVersions(info.version, _currentVersion) <= 0) {
-            debugPrint('检查更新：目标版本 ${info.version} 不高于当前版本 $_currentVersion，跳过');
+          // 客户端兜底：目标版本与当前版本完全一致才跳过（防抖动）。
+          // 非"仅高于"判定：教师端目标版本与实际版本不一致即更新，含降级场景。
+          if (info.version == _currentVersion) {
+            debugPrint('检查更新：目标版本 ${info.version} 与当前版本一致，跳过');
             return null;
           }
           debugPrint('发现新版本: ${info.version}, 文件: ${info.fileName}');
@@ -256,11 +260,17 @@ class UpdateService {
   /// - 本地文件名带版本号，避免"同名不同包"被续传拼坏
   /// - 断点续传前校验已完成字节数（超过目标大小则删除重下）
   /// - 下载完成后按 file_size 做完整性校验
+  ///
+  /// 考试进行中禁止下载（可能因为回到首页触发回调）。
   Future<String?> downloadUpdate(
     UpdateInfo info, {
     required void Function(int received, int total) onProgress,
   }) async {
     if (_isDownloading) return null;
+    if (SocketService.instance.currentStatus == 'exam') {
+      debugPrint('考试进行中，取消更新下载');
+      return null;
+    }
     _isDownloading = true;
     _cancelRequested = false;
 

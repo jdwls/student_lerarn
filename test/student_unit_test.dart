@@ -542,21 +542,21 @@ void main() {
       }
     });
 
-    test('UpdateInfo 解析 file_size / md5 / force_update / min_version', () {
+    test('UpdateInfo 解析 file_size / md5 / force_update', () {
+      // min_version 已随本次升级改造废除（强制升级统一走 force_update）
       final info = UpdateInfo.fromJson({
         'version': '1.1.0',
         'file_name': 'student.exe',
         'file_size': 123,
         'md5': 'ABC123',
         'force_update': true,
-        'min_version': '1.0.5',
+        'min_version': '1.0.5', // 旧字段应被忽略，不再映射
       });
       expect(info.version, '1.1.0');
       expect(info.fileName, 'student.exe');
       expect(info.fileSize, 123);
       expect(info.md5Hex, 'ABC123');
       expect(info.forceUpdate, isTrue);
-      expect(info.minVersion, '1.0.5');
     });
 
     test('UpdateInfo 缺省字段安全降级', () {
@@ -565,7 +565,6 @@ void main() {
       expect(info.fileSize, 0);
       expect(info.md5Hex, '');
       expect(info.forceUpdate, isFalse);
-      expect(info.minVersion, '');
     });
   });
 }
