@@ -38,6 +38,16 @@ class _LoginPageState extends State<LoginPage> {
     final authProvider = context.read<AuthProvider>();
     // 按设备信息自动登录（电脑名+IP匹配）
     await authProvider.attemptAutoLogin();
+    if (mounted && !authProvider.isLoggedIn && authProvider.error != null) {
+      // 自动登录失败（含教师端不可达）时给出提示，避免用户一头雾水
+      // ignore: use_build_context_synchronously
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('自动登录失败，请手动登录'),
+          backgroundColor: AppTheme.errorColor,
+        ),
+      );
+    }
     if (mounted && authProvider.isLoggedIn) {
       // ignore: use_build_context_synchronously
       Navigator.of(context).pushReplacement(

@@ -35,7 +35,9 @@ migrate_working_dir/
 /information/
 /student/
 /md/
-
+/.vscode/
+/test/
+/.gitignore/
 # Symbolication related
 app.*.symbols
 

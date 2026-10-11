@@ -39,6 +39,12 @@ class AuthProvider extends ChangeNotifier {
     _isLoading = true;
     notifyListeners();
 
+    // 用户主动退出登录过，则本次启动不再自动登录，避免退出登录被自动登录抵消
+    final initialPrefs = await SharedPreferences.getInstance();
+    if (initialPrefs.getBool('manual_logout') ?? false) {
+      return;
+    }
+
     try {
       // 获取当前设备信息
       final currentComputerName = await DeviceInfoService.getComputerName();
@@ -66,6 +72,7 @@ class AuthProvider extends ChangeNotifier {
         // 保存登录信息
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('auto_login_user_id', _currentUser!.id);
+        await prefs.setBool('manual_logout', false);
         await prefs.setString('computer_name', currentComputerName);
         await prefs.setString('ip_address', currentIpAddress);
         await prefs.setString('saved_name', studentInfo['name'] ?? '');
@@ -82,6 +89,51 @@ class AuthProvider extends ChangeNotifier {
         return;
       }
 
+      // 设备匹配失败时的兜底：使用本地保存的账号信息走服务端登录验证。
+      // 这样即使教师端设备记录（电脑名/IP）有过变动，已在本机登录过的学生
+      // 仍能自动登录；登录成功后服务端会更新设备记录，下次设备直接匹配。
+      final savedPrefs = await SharedPreferences.getInstance();
+      final savedName = savedPrefs.getString('saved_name') ?? '';
+      final savedPassword = savedPrefs.getString('saved_password') ?? '';
+      if (savedName.isNotEmpty && savedPassword.isNotEmpty) {
+        try {
+          final loginResponse = await _apiService.post('/auth/login', {
+            'name': savedName,
+            'password': savedPassword,
+            'computer_name': currentComputerName,
+            'ip': currentIpAddress,
+          });
+
+          if (loginResponse['success'] == true) {
+            final data = loginResponse['data'] ?? loginResponse;
+            final user = data['user'] ?? data;
+            _currentUser = UserModel(
+              id: user['id']?.toString() ?? '',
+              name: user['name']?.toString() ?? savedName,
+              role: 'student',
+              classId: user['class_id']?.toString() ?? '',
+              computerName: currentComputerName,
+              ip: currentIpAddress,
+            );
+
+            await savedPrefs.setString('auto_login_user_id', _currentUser!.id);
+            await savedPrefs.setString('computer_name', currentComputerName);
+            await savedPrefs.setString('ip_address', currentIpAddress);
+            if (data['token'] != null) {
+              await savedPrefs.setString('auth_token', data['token']);
+            }
+
+            // 连接教师端Socket
+            _connectToTeacher();
+
+            _isLoading = false;
+            notifyListeners();
+            return;
+          }
+        } catch (_) {
+          // 兜底登录失败时不覆盖原有错误，交给登录页提示
+        }
+      }
       // 如果没有找到匹配的学生，不进行本地回退登录
       // 必须连接教师端才能使用学生端
     } catch (e) {
@@ -116,7 +168,10 @@ class AuthProvider extends ChangeNotifier {
       }
       print('未找到匹配的学生');
     } catch (e) {
-      print('查找学生失败: $e');
+      print('查找学生失败(教师端不可达): $e');
+
+      // 教师端不可达不能静默吞掉，抛出后由 attemptAutoLogin 设置 _error 提示用户
+      throw Exception('无法连接教师端，无法确认登录状态');
     }
     return null;
   }
@@ -133,22 +188,7 @@ class AuthProvider extends ChangeNotifier {
     final currentComputerName = await DeviceInfoService.getComputerName();
     final currentIpAddress = await DeviceInfoService.getIpAddress();
 
-    // 从 SharedPreferences 读取注册时的设备信息
     final prefs = await SharedPreferences.getInstance();
-    final registeredComputerName = prefs.getString('computer_name') ?? '';
-    final registeredIpAddress = prefs.getString('ip_address') ?? '';
-
-    // 检查设备是否匹配（只在有注册记录时检查）
-    if (registeredComputerName.isNotEmpty && registeredIpAddress.isNotEmpty) {
-      // 如果当前设备与注册设备不一致，拒绝登录
-      if (currentComputerName != registeredComputerName ||
-          currentIpAddress != registeredIpAddress) {
-        _error = '请在注册的电脑上登录';
-        _isLoading = false;
-        notifyListeners();
-        return false;
-      }
-    }
 
     try {
       // 调用API进行登录验证
@@ -165,6 +205,7 @@ class AuthProvider extends ChangeNotifier {
 
         // 保存登录状态（用于自动登录）
         await prefs.setString('auto_login_user_id', _currentUser!.id);
+        await prefs.setBool('manual_logout', false);
         await prefs.setString('saved_name', name);
         await prefs.setString('saved_password', password);
         if (data['token'] != null) {
@@ -221,6 +262,7 @@ class AuthProvider extends ChangeNotifier {
         // 保存登录状态和设备信息
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('auto_login_user_id', _currentUser!.id);
+        await prefs.setBool('manual_logout', false);
         if (data['token'] != null) {
           await prefs.setString('auth_token', data['token']);
         }
@@ -253,6 +295,10 @@ class AuthProvider extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('auto_login_user_id');
     await prefs.remove('auth_token');
+    // 清除本机保存的自动登录凭据，并标记为手动退出，防止下次启动被自动登录回来
+    await prefs.remove('saved_name');
+    await prefs.remove('saved_password');
+    await prefs.setBool('manual_logout', true);
 
     // 断开 Socket 连接
     try {

@@ -304,7 +304,7 @@ class _MainHomePageState extends State<MainHomePage> with RouteAware {
               ),
               const SizedBox(width: 10),
               _buildBadge(
-                  '班级: ${_activeClassId ?? userProvider.classLabel ?? '--'}',
+                  '班级: ${auth.currentUser?.classId ?? userProvider.classLabel ?? '--'}',
                   const Color(0xFFEEF2FF),
                   const Color(0xFF4338CA)),
               const SizedBox(width: 14),
@@ -477,14 +477,6 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
   }
 
   @override
-  void didUpdateWidget(covariant HomeTab oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.activeClassId != widget.activeClassId) {
-      _loadScoreData();
-    }
-  }
-
-  @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // 从后台恢复/其他页面返回时刷新数据
     if (state == AppLifecycleState.resumed) {
@@ -508,10 +500,12 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
 
     try {
       final auth = context.read<AuthProvider>();
-      // 优先使用教师端活跃班级，否则使用学生注册班级
-      final classId = widget.activeClassId.isNotEmpty
-          ? widget.activeClassId
-          : (auth.currentUser?.classId ?? '');
+      
+      // 已登录学生始终使用本人注册班级，不受教师端切换活跃班级影响；
+      // 活跃班级只影响新登录的学生
+      final classId = (auth.currentUser?.classId ?? '').isNotEmpty
+          ? (auth.currentUser?.classId ?? '')
+          : widget.activeClassId;
       final studentId = auth.currentUser?.id ?? '';
       debugPrint('=== 加载成绩数据 ===');
       debugPrint('classId: $classId, studentId: $studentId');
