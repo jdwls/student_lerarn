@@ -722,7 +722,7 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
       // 整个读改写过程在单文件锁内执行，避免并发写入导致记录丢失
       return storage.withFileLock('pending_typing_submissions.json', () async {
         final pending =
-            await storage.readJson('pending_typing_submissions.json');
+            await storage.readJsonUnlocked('pending_typing_submissions.json');
         final submissions = (pending['submissions'] as List<dynamic>?) ?? [];
         final pendingPayload = {
           'submission_id': submissionId,
@@ -743,7 +743,7 @@ abstract class BaseTypingPageState<T extends BaseTypingPage> extends State<T>
         };
         submissions.add(pendingPayload);
         final saved =
-            await storage.writeJson('pending_typing_submissions.json', {
+            await storage.writeJsonUnlocked('pending_typing_submissions.json', {
           'submissions': submissions,
         });
         if (!saved) {

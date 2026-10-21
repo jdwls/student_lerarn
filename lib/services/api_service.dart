@@ -49,8 +49,7 @@ class ApiService {
       final storage = LocalStorageService.instance;
       // 与写入端共用同一文件锁，避免消费与新增成绩并发读写导致记录丢失
       await storage.withFileLock('pending_typing_submissions.json', () async {
-        final pending =
-            await storage.readJson('pending_typing_submissions.json');
+        final pending = await storage.readJsonUnlocked('pending_typing_submissions.json');
         final raw = pending['submissions'];
         if (raw is! List || raw.isEmpty) return;
 
@@ -81,7 +80,7 @@ class ApiService {
           payload['last_retry_at'] = DateTime.now().toIso8601String();
           remaining.add(payload);
         }
-        await storage.writeJson('pending_typing_submissions.json', {
+        await storage.writeJsonUnlocked('pending_typing_submissions.json', {
           'submissions': remaining,
         });
       });

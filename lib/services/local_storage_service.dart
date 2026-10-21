@@ -95,11 +95,27 @@ class LocalStorageService {
         json.decode(readBack);
       }
 
-      // 3. 原子替换
-      if (await file.exists()) {
-        await file.delete();
+      // 3. 原子替换：先把旧文件挪到备份名，再 rename 临时文件覆盖目标位置。
+      //    避免「删除旧文件 → rename 之间崩溃」导致新旧 data 同时丢失。
+      final backupFile = File('${file.path}.bak');
+      if (await backupFile.exists()) {
+        await backupFile.delete();
       }
-      await tempFile.rename(filePath);
+      if (await file.exists()) {
+        await file.rename(backupFile.path);
+      }
+      try {
+        await tempFile.rename(filePath);
+      } catch (e) {
+        // rename 失败时把旧文件挪回来，保持数据可用
+        if (await backupFile.exists() && !await file.exists()) {
+          await backupFile.rename(filePath);
+        }
+        rethrow;
+      }
+      if (await backupFile.exists()) {
+        await backupFile.delete();
+      }
 
       return true;
     } catch (e) {
@@ -278,36 +294,47 @@ class LocalStorageService {
   // ============ 通用JSON读写方法 ============
 
   /// 读取JSON文件（串行化，避免并发读写冲突）
+  /// 锁 key 使用纯文件名：同一文件的读写共用同一把锁，
+  /// 否则「write_xxx」「read_xxx」两个 key 会互不排斥，互斥失效。
   Future<Map<String, dynamic>> readJson(String filename) async {
-    return withFileLock('read_$filename', () async {
-      try {
-        final base = await _basePath;
-        final file = File(p.join(base, filename));
-
-        if (!file.existsSync()) {
-          return {};
-        }
-
-        final content = await file.readAsString();
-        return json.decode(content) as Map<String, dynamic>;
-      } catch (e) {
-        return {};
-      }
-    });
+    return withFileLock(filename, () => readJsonUnlocked(filename));
   }
 
   /// 写入JSON文件（安全写入 + 串行化，返回bool表示成功/失败）
+  /// 锁 key 与 readJson 一致，使用纯文件名。
   Future<bool> writeJson(String filename, Map<String, dynamic> data) async {
-    return withFileLock('write_$filename', () async {
-      try {
-        final base = await _basePath;
-        final file = File(p.join(base, filename));
-        return await _writeJsonSafely(file.path, data, isEncoded: false);
-      } catch (e) {
-        print('写入JSON失败: $e');
-        return false;
+    return withFileLock(filename, () => writeJsonUnlocked(filename, data));
+  }
+
+  /// readJson 的不加锁版本：仅供已持有同一文件锁的调用方（如整段读改写流程）
+  /// 在锁内使用，避免重入 withFileLock 造成自锁死锁。
+  Future<Map<String, dynamic>> readJsonUnlocked(String filename) async {
+    try {
+      final base = await _basePath;
+      final file = File(p.join(base, filename));
+
+      if (!file.existsSync()) {
+        return {};
       }
-    });
+
+      final content = await file.readAsString();
+      return json.decode(content) as Map<String, dynamic>;
+    } catch (e) {
+      return {};
+    }
+  }
+
+  /// writeJson 的不加锁版本：语义同 readJsonUnlocked，仅限持锁方调用。
+  Future<bool> writeJsonUnlocked(
+      String filename, Map<String, dynamic> data) async {
+    try {
+      final base = await _basePath;
+      final file = File(p.join(base, filename));
+      return await _writeJsonSafely(file.path, data, isEncoded: false);
+    } catch (e) {
+      print('写入JSON失败: $e');
+      return false;
+    }
   }
 
   /// 删除文件
