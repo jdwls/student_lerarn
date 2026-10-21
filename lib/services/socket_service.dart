@@ -19,7 +19,7 @@ class SocketService {
   String _currentStatus = 'online';
   final _connectionController = StreamController<bool>.broadcast();
   bool _intentionalDisconnect = false;
-  String _messageBuffer = ''; // TCP消息缓冲区（防止粘包/半包）
+  Uint8List _byteBuffer = Uint8List(0); // 字节级缓冲（防止粘包/半包、跨块截断多字节UTF-8）
 
   static String _serverIp = 'localhost';
   static const int _socketPort = 20021;
@@ -30,9 +30,8 @@ class SocketService {
   int _reconnectAttempts = 0;
   static const int _maxReconnectDelay = 60;
   static const int _baseReconnectDelay = 1;
-  static const int _maxReconnectAttempts = 10;
 
-  int _heartbeatInterval = 5;
+  final int _heartbeatInterval = 5;
   final List<SocketMessageCallback> _messageCallbacks = [];
 
   SocketService._();
@@ -94,14 +93,20 @@ class SocketService {
   }
 
   void _onData(Uint8List data) {
-    _messageBuffer += utf8.decode(data);
-    // 按换行符分割消息（协议：每条JSON消息以\n结尾），防止粘包/半包
-    while (_messageBuffer.contains('\n')) {
-      final splitIndex = _messageBuffer.indexOf('\n');
-      final message = _messageBuffer.substring(0, splitIndex);
-      _messageBuffer = _messageBuffer.substring(splitIndex + 1);
-      if (message.isEmpty) continue;
-      _processMessage(message);
+    // 先累积字节缓冲，找到消息结束(\n)后按字节切分，再逐条 UTF-8 解码。
+    // 直接对每个 TCP 块单独 utf8.decode 会把跨块的多字节中文截断报错。
+    _byteBuffer = _byteBuffer.isEmpty
+        ? data
+        : Uint8List.fromList([..._byteBuffer, ...data]);
+    while (true) {
+      final nl = _byteBuffer.indexOf(0x0A);
+      if (nl < 0) break;
+      final lineBytes = Uint8List.sublistView(_byteBuffer, 0, nl);
+      _byteBuffer = Uint8List.sublistView(_byteBuffer, nl + 1);
+      if (lineBytes.isEmpty) continue;
+      try {
+        _processMessage(utf8.decode(lineBytes));
+      } catch (_) {}
     }
   }
 
@@ -159,9 +164,9 @@ class SocketService {
   }
 
   void _reconnect() {
-    if (_disposed ||
-        _intentionalDisconnect ||
-        _reconnectAttempts >= _maxReconnectAttempts) return;
+    // 不设重连次数上限：指数退避到 _maxReconnectDelay 后保持固定间隔轮询，
+    // 保证教师端稍后恢复在线时学生端仍能自动重连。
+    if (_disposed || _intentionalDisconnect) return;
     final d = _getReconnectDelay();
     _reconnectAttempts++;
     _reconnectTimer?.cancel();
@@ -183,6 +188,7 @@ class SocketService {
     _heartbeatTimer = null;
     _socket?.close();
     _socket = null;
+    _byteBuffer = Uint8List(0); // 清空残余半包数据
     _isConnected = false;
     _connectionController.add(false);
   }
