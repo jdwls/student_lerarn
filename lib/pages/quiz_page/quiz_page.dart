@@ -173,8 +173,6 @@ class _QuizPageState extends State<QuizPage>
   List<FocusNode> get _typingLineFocusNodes => _ts.lineFocusNodes;
   List<String> get _typingLineInputs => _ts.lineInputs;
   List<String> get _typingLines => _ts.lines;
-  set _typingLines(List<String> v) => _ts.lines = v;
-
   // 定时器用于检测窗口最小化（Win+D 后恢复）
   Timer? _windowCheckTimer;
 

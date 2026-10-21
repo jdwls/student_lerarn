@@ -69,7 +69,9 @@ class _RegisterPageState extends State<RegisterPage> {
         _isLoadingClass = false;
         return;
       }
-    } catch (e) {}
+    } catch (e) {
+      // 读取失败时使用默认班级，不影响注册流程
+    }
 
     if (mounted && _selectedClass.isEmpty) {
       setState(() {

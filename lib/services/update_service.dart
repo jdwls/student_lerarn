@@ -93,7 +93,7 @@ class UpdateService {
 
   /// 由 update.bat 在 exe 替换成功后写入的"待应用版本号"文件
   /// 只有替换成功才会写，避免"版本号变了但程序没换"
-  static String get _pendingVersionPath => '${_configPath}.pending';
+  static String get _pendingVersionPath => '$_configPath.pending';
 
   /// 初始化：先应用上次安装留下的"待定版本号"，再读取当前版本
   static Future<void> init() async {

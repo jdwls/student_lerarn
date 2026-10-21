@@ -791,26 +791,6 @@ mixin _DataLoaderMixin on State<QuizPage> {
     } catch (_) {}
   }
 
-  Future<void> _copyOperationFolderToExam(String bankName) async {
-    try {
-      final sourcePath = 'teacher/exam/$bankName/operation';
-      final sourceDir = Directory(sourcePath);
-      if (!await sourceDir.exists()) {
-        debugPrint('Operation folder not found: $sourcePath');
-        return;
-      }
-      final targetPath = '${AppPath.informationDir}/operation_$bankName';
-      final targetDir = Directory(targetPath);
-      if (await targetDir.exists()) {
-        await targetDir.delete(recursive: true);
-      }
-      await targetDir.create(recursive: true);
-      await _copyDirectory(sourceDir, targetDir);
-    } catch (e) {
-      debugPrint('Copy operation folder exception: $e');
-    }
-  }
-
   Future<void> _copyDirectory(Directory source, Directory target) async {
     await for (final entity in source.list(recursive: false)) {
       final name = entity.path.split(Platform.pathSeparator).last;
@@ -823,47 +803,6 @@ mixin _DataLoaderMixin on State<QuizPage> {
         await targetSubDir.create(recursive: true);
         await _copyDirectory(entity, targetSubDir);
       }
-    }
-  }
-
-  Future<void> _copyOperationFilesToExam(
-      String bankName, List<Map<String, dynamic>> operationQuestions) async {
-    try {
-      final allFiles = <Map<String, dynamic>>[];
-      for (final question in operationQuestions) {
-        final initialFiles = question['initialFiles'] as List<dynamic>? ?? [];
-        for (final file in initialFiles) {
-          allFiles.add({
-            'fileName': file['fileName'] ?? '',
-            'filePath': file['filePath'] ?? '',
-          });
-        }
-      }
-      if (allFiles.isEmpty) return;
-      final success = await VhdService.writeInitialFiles(allFiles);
-      if (success) {
-        debugPrint('Operation files copied to studentExam folder');
-      } else {
-        debugPrint('Operation file copy failed');
-      }
-    } catch (e) {
-      debugPrint('Copy operation file exception: $e');
-    }
-  }
-
-  Future<void> _createVirtualDrive(String bankName) async {
-    try {
-      final bankPath =
-          '${AppPath.informationDir}${Platform.pathSeparator}$bankName${Platform.pathSeparator}操作题';
-      await VhdService.cleanupAllSubstDrives();
-      final driveLetter = await VhdService.mountPath(bankPath);
-      if (driveLetter != null) {
-        debugPrint('Operation drive mapped: $driveLetter');
-      } else {
-        debugPrint('Operation drive mapping failed');
-      }
-    } catch (e) {
-      debugPrint('Create operation drive mapping exception: $e');
     }
   }
 
