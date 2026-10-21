@@ -6,8 +6,6 @@ import '../services/device_info_service.dart';
 import '../services/socket_service.dart';
 
 /// 默认班级常量（可从配置文件动态读取）
-const String _defaultClassId = '初一01班';
-
 class AuthProvider extends ChangeNotifier {
   ApiService _apiService;
   UserModel? _currentUser;
@@ -26,24 +24,19 @@ class AuthProvider extends ChangeNotifier {
   bool get isLoggedIn => _currentUser != null;
   bool get isLoading => _isLoading;
   String? get error => _error;
-
-  /// 获取默认班级（从配置读取或使用fallback）
-  String _getDefaultClass() {
-    return _defaultClassId;
-  }
-
   Future<void> attemptAutoLogin() async {
     // 延迟到下一个帧，避免在 build 阶段调用 notifyListeners
     await Future.delayed(const Duration(milliseconds: 1));
 
-    _isLoading = true;
-    notifyListeners();
-
-    // 用户主动退出登录过，则本次启动不再自动登录，避免退出登录被自动登录抵消
+    // 用户主动退出登录过，则本次启动不再自动登录，避免退出登录被自动登录抵消。
+    // 注意：必须在设置 loading 状态之前判断，否则提前 return 会把 loading 永久卡住。
     final initialPrefs = await SharedPreferences.getInstance();
     if (initialPrefs.getBool('manual_logout') ?? false) {
       return;
     }
+
+    _isLoading = true;
+    notifyListeners();
 
     try {
       // 获取当前设备信息

@@ -31,6 +31,7 @@ class _MainHomePageState extends State<MainHomePage> with RouteAware {
   Timer? _activeClassTimer;
   bool _isPollingPaused = false; // 标记轮询是否暂停
   final ApiService _apiService = ApiService();
+  final GlobalKey<_HomeTabState> _homeTabKey = GlobalKey<_HomeTabState>();
 
   @override
   void initState() {
@@ -180,6 +181,18 @@ class _MainHomePageState extends State<MainHomePage> with RouteAware {
     }
   }
 
+  /// 从打字/小测/兑换页面返回后，刷新积分与成绩数据
+  Future<void> _refreshAfterReturn() async {
+    if (!mounted) return;
+    final auth = context.read<AuthProvider>();
+    final userProvider = context.read<UserProvider>();
+    if (auth.currentUser == null) return;
+    await Future.wait([
+      userProvider.loadUserData(auth.currentUser!.id),
+      _homeTabKey.currentState?.reloadScores() ?? Future<void>.value(),
+    ]);
+  }
+
   /// 启动轮询
   void _startPolling() {
     _activeClassTimer?.cancel();
@@ -222,7 +235,10 @@ class _MainHomePageState extends State<MainHomePage> with RouteAware {
           _buildTopBar(),
           _buildNavBar(),
           Expanded(
-            child: HomeTab(activeClassId: _currentClassId),
+            child: HomeTab(
+              key: _homeTabKey,
+              activeClassId: _currentClassId,
+            ),
           ),
         ],
       ),
@@ -274,7 +290,7 @@ class _MainHomePageState extends State<MainHomePage> with RouteAware {
                     context,
                     MaterialPageRoute(
                         builder: (_) => const PointsExchangePage()),
-                  );
+                  ).then((_) => _refreshAfterReturn());
                 },
                 child: Container(
                   padding:
@@ -361,7 +377,7 @@ class _MainHomePageState extends State<MainHomePage> with RouteAware {
             onTap: () {
               Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const ChineseTypingPage()),
-              );
+              ).then((_) => _refreshAfterReturn());
             },
           ),
           const SizedBox(width: 10),
@@ -372,7 +388,7 @@ class _MainHomePageState extends State<MainHomePage> with RouteAware {
             onTap: () {
               Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const EnglishTypingPage()),
-              );
+              ).then((_) => _refreshAfterReturn());
             },
           ),
           const SizedBox(width: 10),
@@ -389,7 +405,7 @@ class _MainHomePageState extends State<MainHomePage> with RouteAware {
                     studentName: auth.currentUser?.name ?? '',
                   ),
                 ),
-              );
+              ).then((_) => _refreshAfterReturn());
             },
           ),
           const Spacer(),
@@ -561,14 +577,31 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
         _englishTypingData =
             _processTypingData(typingRecords, 'english', twoMonthsAgo);
 
-        // 处理积分记录
+        // 处理积分记录（完整账本：小测最高分 + 打字 + 手动调整 − 兑换消耗）
         final allPointsRecords =
             (response['points_records'] as List<dynamic>? ?? [])
                 .cast<Map<String, dynamic>>();
         final pointsRecords = allPointsRecords
             .where((r) => r['student_id'] == studentId)
             .toList();
-        _pointsData = _processPointsData(pointsRecords, twoMonthsAgo);
+        final adjustRecords =
+            (response['points_adjust_records'] as List<dynamic>? ?? [])
+                .cast<Map<String, dynamic>>()
+                .where((r) => r['student_id'] == studentId)
+                .toList();
+        final exchangeRecords =
+            (response['exchange_records'] as List<dynamic>? ?? [])
+                .cast<Map<String, dynamic>>()
+                .where((r) => r['student_id'] == studentId)
+                .toList();
+        _pointsData = _processPointsData(
+          examRecords,
+          typingRecords,
+          pointsRecords,
+          adjustRecords,
+          exchangeRecords,
+          twoMonthsAgo,
+        );
       } else {
         _error = response['error']?.toString() ?? '获取数据失败';
       }
@@ -586,6 +619,9 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
       });
     }
   }
+
+  /// 供首页在从其他页面返回后主动刷新成绩/积分图表
+  Future<void> reloadScores() => _loadScoreData();
 
   List<ChartDataPoint> _processExamData(
       List<Map<String, dynamic>> records, DateTime since) {
@@ -647,34 +683,75 @@ class _HomeTabState extends State<HomeTab> with WidgetsBindingObserver {
     return result;
   }
 
+  /// 按教师端积分账本口径生成积分变化曲线：
+  /// 小测（同一考试取最高分对应积分）+ 打字 + 手动调整 − 兑换消耗，累计不低于 0
   List<ChartDataPoint> _processPointsData(
-      List<Map<String, dynamic>> records, DateTime since) {
-    final List<Map<String, dynamic>> filtered = [];
+    List<Map<String, dynamic>> examRecords,
+    List<Map<String, dynamic>> typingRecords,
+    List<Map<String, dynamic>> pointsRecords,
+    List<Map<String, dynamic>> adjustRecords,
+    List<Map<String, dynamic>> exchangeRecords,
+    DateTime since,
+  ) {
+    final events = <({DateTime time, int delta})>[];
 
-    for (final r in records) {
-      final dateStr = r['date'] as String? ?? '';
-      if (dateStr.isEmpty) continue;
-      final date = DateTime.tryParse(dateStr);
-      if (date == null || date.isBefore(since)) continue;
-      filtered.add(r);
+    // 小测：同一 exam_name 只计最高分对应的积分（与教师端总积分口径一致）
+    final bestExamRecords =
+        <String, ({double score, int points, DateTime time})>{};
+    for (final r in examRecords) {
+      final time = DateTime.tryParse(r['submit_time']?.toString() ?? '');
+      if (time == null || time.isBefore(since)) continue;
+      final examName = r['exam_name']?.toString() ?? '';
+      final score = (r['score'] as num?)?.toDouble() ?? 0;
+      final points = (r['points'] as num?)?.toInt() ?? 0;
+      final existing = bestExamRecords[examName];
+      if (existing == null || score > existing.score) {
+        bestExamRecords[examName] = (score: score, points: points, time: time);
+      }
+    }
+    for (final record in bestExamRecords.values) {
+      events.add((time: record.time, delta: record.points));
     }
 
-    filtered.sort((a, b) {
-      final da =
-          DateTime.tryParse(a['date'] as String? ?? '') ?? DateTime.now();
-      final db =
-          DateTime.tryParse(b['date'] as String? ?? '') ?? DateTime.now();
-      return da.compareTo(db);
-    });
+    // 打字：每条记录（教师端已按 submission_id 幂等）
+    for (final r in typingRecords) {
+      final time = DateTime.tryParse(r['submit_time']?.toString() ?? '');
+      if (time == null || time.isBefore(since)) continue;
+      events.add((time: time, delta: (r['points'] as num?)?.toInt() ?? 0));
+    }
+
+    // 兼容旧版学生端通过 /score/points 写入的明细（没有 source 字段）
+    for (final r in pointsRecords) {
+      final source = r['source']?.toString() ?? '';
+      if (source == 'exam' || source == 'typing') continue;
+      final time = DateTime.tryParse(r['date']?.toString() ?? '');
+      if (time == null || time.isBefore(since)) continue;
+      events.add((time: time, delta: (r['points'] as num?)?.toInt() ?? 0));
+    }
+
+    // 教师手动调整（可正可负）
+    for (final r in adjustRecords) {
+      final time = DateTime.tryParse(r['date']?.toString() ?? '');
+      if (time == null || time.isBefore(since)) continue;
+      events.add((time: time, delta: (r['delta'] as num?)?.toInt() ?? 0));
+    }
+
+    // 积分兑换消耗
+    for (final r in exchangeRecords) {
+      final time = DateTime.tryParse(r['exchange_time']?.toString() ?? '');
+      if (time == null || time.isBefore(since)) continue;
+      events.add(
+          (time: time, delta: -((r['points_cost'] as num?)?.toInt() ?? 0)));
+    }
+
+    events.sort((a, b) => a.time.compareTo(b.time));
 
     double cumulative = 0;
     final result = <ChartDataPoint>[];
-    for (final r in filtered) {
-      final date =
-          DateTime.tryParse(r['date'] as String? ?? '') ?? DateTime.now();
-      final points = (r['points'] as num?)?.toDouble() ?? 0;
-      cumulative += points;
-      result.add(ChartDataPoint(date, cumulative));
+    for (final event in events) {
+      cumulative += event.delta;
+      if (cumulative < 0) cumulative = 0;
+      result.add(ChartDataPoint(event.time, cumulative));
     }
 
     return result;
@@ -1332,10 +1409,10 @@ class _UpdateProgressDialog extends StatefulWidget {
   final VoidCallback? onCancel;
 
   const _UpdateProgressDialog({
-    Key? key,
+    super.key,
     required this.updateInfo,
     this.onCancel,
-  }) : super(key: key);
+  });
 
   @override
   State<_UpdateProgressDialog> createState() => _UpdateProgressDialogState();
