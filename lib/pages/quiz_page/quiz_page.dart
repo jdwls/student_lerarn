@@ -121,6 +121,11 @@ class _QuizPageState extends State<QuizPage>
   int _examRemainingSeconds = 0; // 考试剩余时间（秒）
   Timer? _examTimer; // 考试倒计时计时器
 
+  // 课堂小测全局锁与收卷
+  bool _examEntryDisabled = false; // 教师是否已锁定课堂小测
+  bool _collectDialogShowing = false; // 收卷提示框是否正在显示
+  Timer? _controlPollTimer; // 轮询课堂小测状态
+
   /// 是否可以交卷
   /// - 无时间限制时，始终可交卷
   /// - 有时间限制时：
@@ -226,11 +231,94 @@ class _QuizPageState extends State<QuizPage>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _enterFullScreenAfterRouteTransition();
     });
-    _loadQuestionBanks();
+    _initExamControl();
+    _startControlPolling();
+  }
+
+  /// 进入小测前先检查全局锁，锁定则显示提示，不再加载题库
+  Future<void> _initExamControl() async {
+    final control = await QuizService.getStudentControl(widget.studentId);
+    if (!mounted) return;
+    _examEntryDisabled = control['exam_entry_disabled'] == true;
+    if (_examEntryDisabled) {
+      setState(() {
+        _isLoading = false;
+        _errorMessage = '教师已设置此时无法进入课堂小测';
+      });
+      return;
+    }
+    await _loadQuestionBanks();
+  }
+
+  /// 每 2 秒轮询全局锁与本人收卷请求
+  void _startControlPolling() {
+    _controlPollTimer?.cancel();
+    _controlPollTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      _pollExamControl();
+    });
+  }
+
+  Future<void> _pollExamControl() async {
+    if (!mounted) return;
+    final control = await QuizService.getStudentControl(widget.studentId);
+    if (!mounted) return;
+
+    final disabled = control['exam_entry_disabled'] == true;
+    final wasDisabled = _examEntryDisabled;
+    if (disabled != _examEntryDisabled) {
+      setState(() => _examEntryDisabled = disabled);
+    }
+    if (disabled) return;
+
+    // 锁定解除后，若页面仍停留在锁定提示，自动重新加载进入小测
+    if (wasDisabled &&
+        _errorMessage == '教师已设置此时无法进入课堂小测') {
+      await _initExamControl();
+      return;
+    }
+
+    // 解锁后若考试时间已结束但尚未提交，自动补交
+    if (wasDisabled &&
+        _examTimeLimit > 0 &&
+        _examRemainingSeconds <= 0 &&
+        _selectedBank != null &&
+        _currentQuestions.isNotEmpty &&
+        !_isSubmitting) {
+      await _autoSubmitExam();
+      return;
+    }
+
+    if (control['collect_requested'] == true &&
+        _selectedBank != null &&
+        _currentQuestions.isNotEmpty &&
+        !_collectDialogShowing &&
+        !_isSubmitting) {
+      await _handleTeacherCollect();
+    }
+  }
+
+  /// 教师收卷：提示 3 秒后自动交卷
+  Future<void> _handleTeacherCollect() async {
+    if (_collectDialogShowing || _isSubmitting || _examEntryDisabled) return;
+    _collectDialogShowing = true;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const _TeacherCollectDialog(),
+    );
+    _collectDialogShowing = false;
+    if (!mounted) return;
+    await QuizService.ackCollect(widget.studentId);
+    if (!mounted) return;
+    await _autoSubmitExam();
   }
 
   @override
   void dispose() {
+    _controlPollTimer?.cancel();
+    _controlPollTimer = null;
+    // 离开小测页时清除残留收卷请求，避免再次进入被误收卷
+    QuizService.ackCollect(widget.studentId);
     _timer?.cancel();
     _examTimer?.cancel();
     _stopWindowCheck();
@@ -410,7 +498,7 @@ class _QuizPageState extends State<QuizPage>
               ),
               const SizedBox(height: 24),
               ElevatedButton.icon(
-                onPressed: _loadQuestionBanks,
+                onPressed: _initExamControl,
                 icon: const Icon(Icons.refresh),
                 label: const Text('重试'),
               ),
@@ -873,12 +961,16 @@ class _QuizPageState extends State<QuizPage>
   /// 提交按钮（始终显示，带未完成检查和交卷时间限制）
   Widget _buildSubmitButton() {
     return InkWell(
-      onTap: (_isSubmitting || !_canSubmitExam) ? null : _handleSubmitClick,
+      onTap: (_isSubmitting || !_canSubmitExam || _examEntryDisabled)
+          ? null
+          : _handleSubmitClick,
       borderRadius: BorderRadius.circular(8),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
         decoration: BoxDecoration(
-          color: !_canSubmitExam ? Colors.grey[400] : AppTheme.successColor,
+          color: (_examEntryDisabled || !_canSubmitExam)
+              ? Colors.grey[400]
+              : AppTheme.successColor,
           borderRadius: BorderRadius.circular(8),
         ),
         child: Row(
@@ -905,6 +997,14 @@ class _QuizPageState extends State<QuizPage>
 
   /// 提交点击处理 - 检查时间限制
   void _handleSubmitClick() {
+    // 0. 教师锁定课堂小测时禁止交卷
+    if (_examEntryDisabled) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('教师已设置此时无法进入课堂小测，暂不能交卷')),
+      );
+      return;
+    }
+
     // 1. 检查时间是否到
     if (!_canSubmitExam) {
       final remaining = _examRemainingSeconds;
@@ -1398,5 +1498,69 @@ class _QuizPageState extends State<QuizPage>
       default:
         return const Text('未知题型');
     }
+  }
+}
+
+/// 教师收卷提示：显示 3 秒后自动关闭并交卷
+class _TeacherCollectDialog extends StatefulWidget {
+  const _TeacherCollectDialog();
+
+  @override
+  State<_TeacherCollectDialog> createState() => _TeacherCollectDialogState();
+}
+
+class _TeacherCollectDialogState extends State<_TeacherCollectDialog> {
+  int _remaining = 3;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) return;
+      if (_remaining <= 1) {
+        timer.cancel();
+        Navigator.of(context).pop();
+      } else {
+        setState(() => _remaining--);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: false,
+      child: AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.inventory_2_outlined, color: Colors.deepOrange),
+            SizedBox(width: 8),
+            Text('教师正在收卷'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('教师已发起收卷，页面将在 3 秒后自动交卷。'),
+            const SizedBox(height: 16),
+            Text(
+              '$_remaining 秒',
+              style: const TextStyle(
+                fontSize: 28,
+                fontWeight: FontWeight.w800,
+                color: Colors.deepOrange,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

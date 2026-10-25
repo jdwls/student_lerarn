@@ -48,6 +48,14 @@ mixin _DataLoaderMixin on State<QuizPage> {
 
   Future<void> _loadQuestionBank(String bankName) async {
     if (!_quizState.mounted) return;
+    // 教师已锁定课堂小测时禁止进入答题
+    if (_quizState._examEntryDisabled) {
+      _quizState.setState(() {
+        _quizState._isLoading = false;
+        _quizState._errorMessage = '教师已设置此时无法进入课堂小测';
+      });
+      return;
+    }
     final generation = ++_quizState._loadGeneration;
     bool current() => _quizState._isCurrentLoad(generation);
     _quizState.setState(() {

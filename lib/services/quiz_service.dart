@@ -297,4 +297,40 @@ class QuizService {
       return [];
     }
   }
+
+  /// 获取课堂小测全局锁与本人收卷请求
+  static Future<Map<String, dynamic>> getStudentControl(
+      String studentId) async {
+    try {
+      final uri = Uri.parse(
+          '$apiBaseUrl/student-control?student_id=${Uri.encodeQueryComponent(studentId)}');
+      final response = await _client.get(uri).timeout(_defaultTimeout);
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data is Map<String, dynamic>) return data;
+      }
+    } catch (e) {
+      print('获取小测控制状态失败: $e');
+    }
+    return <String, dynamic>{
+      'success': false,
+      'exam_entry_disabled': false,
+      'collect_requested': false,
+    };
+  }
+
+  /// 学生交卷后确认收到收卷指令，避免重复触发
+  static Future<void> ackCollect(String studentId) async {
+    try {
+      await _client
+          .post(
+            Uri.parse('$apiBaseUrl/exam-collect/ack'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({'student_id': studentId}),
+          )
+          .timeout(_defaultTimeout);
+    } catch (e) {
+      print('确认收卷失败: $e');
+    }
+  }
 }

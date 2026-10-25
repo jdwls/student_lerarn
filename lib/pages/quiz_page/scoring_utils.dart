@@ -168,7 +168,11 @@ mixin _ScoringUtilsMixin on State<QuizPage> {
 
   /// Submit exam
   Future<void> _submitExam() async {
-    if (!_quizState._canSubmitExam || _quizState._isSubmitting) return;
+    if (!_quizState._canSubmitExam ||
+        _quizState._isSubmitting ||
+        _quizState._examEntryDisabled) {
+      return;
+    }
 
     // Confirm dialog
     final confirmed = await showDialog<bool>(
@@ -289,6 +293,14 @@ mixin _ScoringUtilsMixin on State<QuizPage> {
   /// Auto-submit when time runs out
   Future<void> _autoSubmitExam() async {
     debugPrint('Time\'s up, auto-submitting...');
+    if (_quizState._examEntryDisabled) {
+      if (_quizState.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('教师已暂停交卷，解锁后将自动提交')),
+        );
+      }
+      return;
+    }
     if (_quizState._isSubmitting) return;
 
     _quizState.setState(() => _quizState._isSubmitting = true);

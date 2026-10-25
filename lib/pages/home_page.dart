@@ -30,6 +30,7 @@ class _MainHomePageState extends State<MainHomePage> with RouteAware {
   String? _activeClassId; // 教师端当前活跃班级
   Timer? _activeClassTimer;
   bool _isPollingPaused = false; // 标记轮询是否暂停
+  bool _examEntryDisabled = false; // 教师是否已锁定课堂小测
   final ApiService _apiService = ApiService();
   final GlobalKey<_HomeTabState> _homeTabKey = GlobalKey<_HomeTabState>();
 
@@ -216,6 +217,16 @@ class _MainHomePageState extends State<MainHomePage> with RouteAware {
           // 活跃班级只用于展示/后续流程，不重新查找已登录学生，避免覆盖身份资料。
         }
       }
+
+      // 同步课堂小测全局锁状态
+      final control = await _apiService.get('/exam-control');
+      if (!mounted) return;
+      if (control['success'] == true) {
+        final disabled = control['exam_entry_disabled'] == true;
+        if (disabled != _examEntryDisabled) {
+          setState(() => _examEntryDisabled = disabled);
+        }
+      }
     } catch (e) {
       debugPrint('获取活跃班级失败: $e');
     }
@@ -396,6 +407,8 @@ class _MainHomePageState extends State<MainHomePage> with RouteAware {
             text: '考试小测',
             icon: Icons.quiz,
             color: const Color(0xFF16A34A),
+            enabled: !_examEntryDisabled,
+            disabledMessage: '教师已设置此时无法进入课堂小测',
             onTap: () {
               final auth = context.read<AuthProvider>();
               Navigator.of(context).push(
@@ -419,29 +432,40 @@ class _MainHomePageState extends State<MainHomePage> with RouteAware {
     required IconData icon,
     required Color color,
     required VoidCallback onTap,
+    bool enabled = true,
+    String disabledMessage = '当前不可用',
   }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-        decoration: BoxDecoration(
-          color: color.withAlpha(26),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: color.withAlpha(128)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 18, color: color),
-            const SizedBox(width: 6),
-            Text(
-              text,
-              style: TextStyle(
-                fontWeight: FontWeight.w700,
-                color: color,
+    return Opacity(
+      opacity: enabled ? 1 : 0.45,
+      child: GestureDetector(
+        onTap: enabled
+            ? onTap
+            : () {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(disabledMessage)),
+                );
+              },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+          decoration: BoxDecoration(
+            color: color.withAlpha(26),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: color.withAlpha(128)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 18, color: color),
+              const SizedBox(width: 6),
+              Text(
+                text,
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  color: color,
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
